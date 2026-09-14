@@ -22,8 +22,9 @@ class FullParquetDataset(Dataset):
             self.parquet = pq.ParquetFile(self.parquet_path)
 
         table = self.parquet.read_row_group(idx, columns=self.load_columns)
-        features = table.select(FEATURE_COLUMNS).to_pandas().to_numpy(dtype=np.float32)
-        targets = np.column_stack([table[c].to_numpy() for c in TARGET_COLUMNS]).astype(np.float32)
+
+        features = table.select(FEATURE_COLUMNS).to_pandas().to_numpy(dtype=np.float32).copy()
+        targets = table.select(TARGET_COLUMNS).to_pandas().to_numpy(dtype=np.float32).copy()
 
         return torch.from_numpy(features), torch.from_numpy(targets)
 
@@ -56,4 +57,12 @@ def create_model(cfg) -> nn.Module:
 
 def get_dataloader(cfg) -> DataLoader:
     ds = FullParquetDataset(cfg.train_path)
-    return DataLoader(ds, batch_size=cfg.full_batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    return DataLoader(
+        ds, 
+        batch_size=cfg.full_batch_size, 
+        shuffle=True, 
+        num_workers=4,  
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2
+    )

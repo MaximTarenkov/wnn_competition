@@ -8,9 +8,9 @@ class Config:
     valid_path: str = "../datasets/valid.parquet"
     runs_dir: str = "runs"
 
-    seeds: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 67, 7, 8, 9])
+    seeds: List[int] = field(default_factory=lambda: [1]) # [1, 2, 3, 4, 5, 6, 67, 7, 8, 9]
 
-    max_epochs: int = 10
+    max_epochs: int = 2
     lr: float = 1e-3
     weight_decay: float = 1e-4
     log_interval: int = 25

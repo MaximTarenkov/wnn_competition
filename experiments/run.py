@@ -56,7 +56,7 @@ def main():
     cfg = Config()
 
     experiments = [
-        ("base_gru_chunked", exp_chunked),
+        # ("base_gru_chunked", exp_chunked),
         ("base_gru_full", exp_full),
     ]
 
