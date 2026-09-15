@@ -28,12 +28,17 @@ def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def run_experiment(exp_name, model_module, method_module, cfg):
     print(f"СТАРТ ЭКСПЕРИМЕНТА: {exp_name}")
 
-    train_loader = model_module.get_dataloader(cfg)
     exp_results = []
 
     for i, seed in enumerate(cfg.seeds, 1):
@@ -41,6 +46,8 @@ def run_experiment(exp_name, model_module, method_module, cfg):
         set_seed(seed)
 
         model = model_module.create_model(cfg)
+        train_loader = model_module.get_dataloader(cfg, seed=seed)
+
         final_full_wp = method_module.train_seed(model, train_loader, cfg, exp_name, seed)
         exp_results.append({"seed": seed, "final_full_wp": final_full_wp})
 
