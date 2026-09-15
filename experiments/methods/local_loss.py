@@ -8,28 +8,50 @@ from pathlib import Path
 import torch
 from methods.validator import evaluate
 
+METRIC_CLIP = 2.0
+WARMUP = 0
 
-def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8):
-    p_flat = pred.reshape(-1, 2)
-    t_flat = torch.clamp(target.reshape(-1, 2), -2.0, 2.0)
-    weights = torch.abs(t_flat).clamp(min=eps)
+def weighted_pearson_loss(y_pred, y_true):
+    p_steps = y_pred[:, WARMUP:, :]
+    t_steps = torch.clamp(y_true[:, WARMUP:, :], -METRIC_CLIP, METRIC_CLIP)
+    eps = 1e-8
 
-    loss = 0.0
+    # 1. Global Batch Loss
+    pred_flat = p_steps.reshape(-1, 2)
+    true_flat = t_steps.reshape(-1, 2)
+    global_loss = 0.0
     for i in range(2):
-        p, t, w = p_flat[:, i], t_flat[:, i], weights[:, i]
-        w_sum = torch.sum(w)
-        p_mean = torch.sum(w * p) / w_sum
-        t_mean = torch.sum(w * t) / w_sum
-        p_diff, t_diff = p - p_mean, t - t_mean
+        p = pred_flat[:, i]
+        t = true_flat[:, i]
+        w = torch.abs(t).clamp(min=eps)
+        sw = torch.sum(w)
+        sn_p = p - torch.sum(p * w) / sw
+        sn_t = t - torch.sum(t * w) / sw
+        cov = torch.sum(w * sn_p * sn_t) / sw
+        var_p = torch.sum(w * sn_p**2) / sw
+        var_t = torch.sum(w * sn_t**2) / sw
+        corr = cov / (torch.sqrt(var_p + eps) * torch.sqrt(var_t + eps) + eps)
+        global_loss -= torch.clamp(corr, -1.0, 1.0)
+    global_loss /= 2.0
 
-        cov = torch.sum(w * p_diff * t_diff) / w_sum
-        p_var = torch.sum(w * p_diff ** 2) / w_sum
-        t_var = torch.sum(w * t_diff ** 2) / w_sum
+    # 2. Local Sequence Loss
+    local_loss = 0.0
+    for i in range(2):
+        p = p_steps[:, :, i]
+        t = t_steps[:, :, i]
+        w = torch.abs(t).clamp(min=eps)
+        sw = torch.sum(w, dim=1, keepdim=True)
+        sn_p = p - torch.sum(p * w, dim=1, keepdim=True) / sw
+        sn_t = t - torch.sum(t * w, dim=1, keepdim=True) / sw
+        cov = torch.sum(w * sn_p * sn_t, dim=1, keepdim=True) / sw
+        var_p = torch.sum(w * sn_p**2, dim=1, keepdim=True) / sw
+        var_t = torch.sum(w * sn_t**2, dim=1, keepdim=True) / sw
+        corr = cov / (torch.sqrt(var_p + eps) * torch.sqrt(var_t + eps) + eps)
+        local_loss -= torch.mean(torch.clamp(corr, -1.0, 1.0))
+    local_loss /= 2.0
 
-        corr = cov / (torch.sqrt(p_var + eps) * torch.sqrt(t_var + eps) + eps)
-        loss = loss - corr
-
-    return loss / 2.0
+    total_loss = local_loss
+    return total_loss, -global_loss.item()
 
 
 class ExperimentLogger:
@@ -124,7 +146,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
             out = model(x)
             preds = out[0] if isinstance(out, tuple) else out
 
-            loss = weighted_pearson_loss(preds, y)
+            loss, global_wp = weighted_pearson_loss(preds, y)
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
