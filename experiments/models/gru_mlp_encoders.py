@@ -111,8 +111,20 @@ def create_model(cfg) -> nn.Module:
     )
 
 
-def get_dataloader(cfg) -> DataLoader:
+import random
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % (2**32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+def get_dataloader(cfg, seed=None) -> DataLoader:
     ds = ParquetFastChunkDataset(cfg.train_path, chunk_size=cfg.chunk_size)
+    
+    g = torch.Generator()
+    if seed is not None:
+        g.manual_seed(seed)
+
     return DataLoader(
         ds,
         batch_size=cfg.full_batch_size,
@@ -120,5 +132,7 @@ def get_dataloader(cfg) -> DataLoader:
         num_workers=4,
         pin_memory=True,
         prefetch_factor=2,
+        worker_init_fn=seed_worker,
+        generator=g,
         collate_fn=chunk_collate_fn,
     )

@@ -55,14 +55,27 @@ def create_model(cfg) -> nn.Module:
     )
 
 
-def get_dataloader(cfg) -> DataLoader:
+import random
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % (2**32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+def get_dataloader(cfg, seed=None) -> DataLoader:
     ds = FullParquetDataset(cfg.train_path)
+    
+    g = torch.Generator()
+    if seed is not None:
+        g.manual_seed(seed)
+
     return DataLoader(
-        ds, 
-        batch_size=cfg.full_batch_size, 
-        shuffle=True, 
-        num_workers=4,  
+        ds,
+        batch_size=cfg.full_batch_size,
+        shuffle=True,
+        num_workers=4,
         pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2
+        prefetch_factor=2,
+        worker_init_fn=seed_worker,
+        generator=g,
     )
