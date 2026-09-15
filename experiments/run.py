@@ -18,6 +18,7 @@ from models import vgru_chunked
 from models import gru_mlp_encoders_sort
 from models import gru_mlp_encoders_l1
 from models import gru_chrono_init
+from models import gru_chunked_noshuffle
 import models.base_gru_chunked as exp_chunked
 import models.base_gru_full as exp_full
 
@@ -84,7 +85,8 @@ def main():
         #("gru_gated_output", gru_gated_output, base_method),
         #("vgru_chunked", vgru_chunked, base_method),
         #("gru_mlp_encoders_sortonly", gru_mlp_encoders_sort, base_method),
-        ("gru_chrono_init", gru_chrono_init, base_method),
+        #("gru_chrono_init", gru_chrono_init, base_method),
+        ("gru_chunked_noshuffle", gru_chunked_noshuffle, base_method),
 
 
     ]
