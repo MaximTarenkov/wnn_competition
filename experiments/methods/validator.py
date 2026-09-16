@@ -1,57 +1,66 @@
+import os
 import numpy as np
-import pyarrow.feather as feather
-import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset, DataLoader
-from utils import GlobalAccumulator, FEATURE_COLUMNS, TARGET_COLUMNS
+from utils import GlobalAccumulator, SEQUENCE_LENGTH, N_FEATURES
 
 
 class ValDataset(Dataset):
-    def __init__(self, feather_path, parquet_meta_path, sample_stride=1):
-        self.table = feather.read_table(feather_path, memory_map=True)
-
-        parquet_file = pq.ParquetFile(parquet_meta_path)
-        num_rg = parquet_file.num_row_groups
+    def __init__(self, feat_path, targ_path, mask_path, sample_stride=1):
+        self.feat_path = feat_path
+        self.targ_path = targ_path
+        self.mask_path = mask_path
+        self.sample_stride = sample_stride
         
-        row_counts = [parquet_file.metadata.row_group(i).num_rows for i in range(num_rg)]
-        
-        self.offsets = np.cumsum([0] + row_counts)
-        self.indices = list(range(0, num_rg, sample_stride))
+        bytes_per_seq = SEQUENCE_LENGTH * N_FEATURES * 4
+        self.num_seq = os.path.getsize(feat_path) // bytes_per_seq
+        self.indices = list(range(0, self.num_seq, sample_stride))
 
-        self.feature_cols = FEATURE_COLUMNS
-        self.target_cols = list(TARGET_COLUMNS)
+        self.features = None
+        self.targets = None
+        self.masks = None
+
+    def _init_mmap(self):
+        if self.features is None:
+            self.features = np.memmap(
+                self.feat_path, dtype=np.float32, mode="r",
+                shape=(self.num_seq, SEQUENCE_LENGTH, N_FEATURES)
+            )
+            self.targets = np.memmap(
+                self.targ_path, dtype=np.float32, mode="r",
+                shape=(self.num_seq, SEQUENCE_LENGTH, 2)
+            )
+            self.masks = np.memmap(
+                self.mask_path, dtype=bool, mode="r",
+                shape=(self.num_seq, SEQUENCE_LENGTH)
+            )
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        rg_idx = self.indices[idx]
-        start_row = self.offsets[rg_idx]
-        length = self.offsets[rg_idx + 1] - start_row
-
-        sub_table = self.table.slice(start_row, length)
-
-        features = sub_table.select(self.feature_cols).to_pandas().to_numpy(dtype=np.float32)
-        targets = sub_table.select(self.target_cols).to_pandas().to_numpy(dtype=np.float32)
-
-        is_scored = sub_table['is_scored'].to_numpy().astype(bool)
-        need_pred = sub_table['need_prediction'].to_numpy().astype(bool)
-        mask = is_scored & need_pred
+        self._init_mmap()
+        seq_idx = self.indices[idx]
 
         return (
-            torch.from_numpy(features),
-            torch.from_numpy(targets),
-            torch.from_numpy(mask)
+            torch.from_numpy(self.features[seq_idx].copy()),
+            torch.from_numpy(self.targets[seq_idx].copy()),
+            torch.from_numpy(self.masks[seq_idx].copy())
         )
 
 
 @torch.inference_mode()
-def evaluate(model, feather_path, parquet_meta_path, device, sample_stride=1, batch_size=8, num_workers=2):
+def evaluate(model, cfg, device, sample_stride=1, batch_size=8, num_workers=2):
     model.eval()
     device = torch.device(device)
     use_cuda = device.type == 'cuda'
 
-    val_dataset = ValDataset(feather_path, parquet_meta_path, sample_stride=sample_stride)
+    val_dataset = ValDataset(
+        cfg.val_feat_mmap, 
+        cfg.val_targ_mmap, 
+        cfg.val_mask_mmap, 
+        sample_stride=sample_stride
+    )
     
     val_loader = DataLoader(
         val_dataset,
@@ -81,12 +90,12 @@ def evaluate(model, feather_path, parquet_meta_path, device, sample_stride=1, ba
 
 
 @torch.inference_mode()
-def evaluate_chunked(model, feather_path, parquet_meta_path, device, chunk_size=2000, sample_stride=1, batch_size=8, num_workers=2):
+def evaluate_chunked(model, cfg, device, chunk_size=2000, sample_stride=1, batch_size=8, num_workers=2):
     model.eval()
     device = torch.device(device)
     use_cuda = device.type == 'cuda'
 
-    val_dataset = ValDataset(feather_path, parquet_meta_path, sample_stride=sample_stride)
+    val_dataset = ValDataset(cfg.val_feat_mmap, cfg.val_targ_mmap, cfg.val_mask_mmap, sample_stride=sample_stride)
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,

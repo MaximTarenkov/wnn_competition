@@ -10,8 +10,9 @@ class Config:
     train_feat_mmap: str = "../datasets/train_features.mmap"
     train_targ_mmap: str = "../datasets/train_targets.mmap"
 
-    valid_feather_path: str = "../datasets/val_mmap.feather" 
-    valid_parquet_meta_path: str = "../datasets/valid.parquet"
+    val_feat_mmap: str = "../datasets/val_features.mmap"
+    val_targ_mmap: str = "../datasets/val_targets.mmap"
+    val_mask_mmap: str = "../datasets/val_masks.mmap"
 
     runs_dir: str = "runs"
 
