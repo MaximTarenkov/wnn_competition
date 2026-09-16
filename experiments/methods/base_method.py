@@ -185,7 +185,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                 logger.log_train_step(epoch, global_step, current_lr, avg_train_loss, avg_train_wp)
 
             if step_in_epoch in val_steps_in_epoch:
-                sub_res = evaluate(model, cfg.valid_path, device, sample_stride=10)
+                sub_res = evaluate(model, cfg.valid_feather_path, cfg.valid_parquet_meta_path, device, sample_stride=10)
                 sub_wp = sub_res['weighted_pearson']
 
                 if sub_wp > best_sub_wp:
@@ -211,7 +211,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                 model.train()
 
         if not early_stop_triggered:
-            full_res = evaluate(model, cfg.valid_path, device, sample_stride=1)
+            full_res = evaluate(model, cfg.valid_feather_path, cfg.valid_parquet_meta_path, device, sample_stride=1)
             full_wp = full_res['weighted_pearson']
             logger.info(
                 f"=== FULL VAL (100%) | End of Ep {epoch:02d} | "
@@ -226,7 +226,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
     logger.info("Финальная оценка лучшего чекпоинта на 100% валидации...")
     model.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
 
-    final_res = evaluate(model, cfg.valid_path, device, sample_stride=1)
+    final_res = evaluate(model, cfg.valid_feather_path, cfg.valid_parquet_meta_path, device, sample_stride=1)
     final_wp = final_res['weighted_pearson']
 
     logger.info(f"ИТОГ СИДА FULL VAL WP: {final_wp:.5f} (t0: {final_res['t0']:.4f}, t1: {final_res['t1']:.4f})")
