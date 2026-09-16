@@ -118,21 +118,55 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
 
         for step_in_epoch, (x, y) in enumerate(train_loader, 1):
             global_step += 1
-            x, y = x.to(device), y.to(device)
-            optimizer.zero_grad()
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
 
-            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                out = model(x)
-                preds = out[0] if isinstance(out, tuple) else out
+            if x.dim() == 4:
+                B, num_chunks, T_chunk, D = x.shape
+                h = None
+                total_loss_val = 0.0
 
-            loss = weighted_pearson_loss(preds, y)
-            loss.backward()
+                for c in range(num_chunks):
+                    x_chunk = x[:, c, :, :]
+                    y_chunk = y[:, c, :, :]
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        out = model(x_chunk, h)
+                        if isinstance(out, tuple):
+                            pred_chunk, h = out
+                        else:
+                            pred_chunk, h = out, None
 
-            step_loss_acc += loss.item()
-            step_wp_acc += (-loss.item())
+                    loss = weighted_pearson_loss(pred_chunk, y_chunk)
+
+                    (loss / num_chunks).backward()
+
+                    if h is not None:
+                        h = h.detach()
+
+                    total_loss_val += loss.item()
+
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+                step_loss = total_loss_val / num_chunks
+
+            else:
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    out = model(x)
+                    preds = out[0] if isinstance(out, tuple) else out
+
+                loss = weighted_pearson_loss(preds, y)
+                loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+                step_loss = loss.item()
+
+            step_loss_acc += step_loss
+            step_wp_acc += (-step_loss)
             step_count += 1
 
             current_lr = optimizer.param_groups[0]['lr']
