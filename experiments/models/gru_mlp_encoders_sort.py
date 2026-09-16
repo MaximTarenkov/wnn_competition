@@ -23,23 +23,27 @@ class GRUWithEncoders(nn.Module):
         self.head = nn.Linear(hidden_dim, output_dim)
 
     def _process_book(self, p_b, v_b, p_a, v_a, dp, dv):
-        p_b_safe = torch.where(
-            v_b == 0.0, torch.full_like(p_b, -float("inf")), p_b
-        )
-        sorted_p_b, idx_b = torch.sort(p_b_safe, dim=-1, descending=True)
-        sorted_v_b = torch.gather(v_b, dim=-1, index=idx_b)
-        sorted_p_b = torch.where(
-            torch.isinf(sorted_p_b), torch.zeros_like(sorted_p_b), sorted_p_b
-        )
+        mask_b = (v_b > 0.0) & (p_b > 0.0)
+        p_b_key = torch.where(mask_b, p_b, torch.full_like(p_b, -1e6)).detach()
+        _, idx_b = torch.sort(p_b_key, dim=-1, descending=True)
 
-        p_a_safe = torch.where(
-            v_a == 0.0, torch.full_like(p_a, float("inf")), p_a
-        )
-        sorted_p_a, idx_a = torch.sort(p_a_safe, dim=-1, descending=False)
+        sorted_p_b = torch.gather(p_b, dim=-1, index=idx_b)
+        sorted_v_b = torch.gather(v_b, dim=-1, index=idx_b)
+        sorted_mask_b = torch.gather(mask_b, dim=-1, index=idx_b)
+
+        sorted_p_b = torch.where(sorted_mask_b, sorted_p_b, torch.zeros_like(sorted_p_b))
+        sorted_v_b = torch.where(sorted_mask_b, sorted_v_b, torch.zeros_like(sorted_v_b))
+
+        mask_a = (v_a > 0.0) & (p_a > 0.0)
+        p_a_key = torch.where(mask_a, p_a, torch.full_like(p_a, 1e6)).detach()
+        _, idx_a = torch.sort(p_a_key, dim=-1, descending=False)
+
+        sorted_p_a = torch.gather(p_a, dim=-1, index=idx_a)
         sorted_v_a = torch.gather(v_a, dim=-1, index=idx_a)
-        sorted_p_a = torch.where(
-            torch.isinf(sorted_p_a), torch.zeros_like(sorted_p_a), sorted_p_a
-        )
+        sorted_mask_a = torch.gather(mask_a, dim=-1, index=idx_a)
+
+        sorted_p_a = torch.where(sorted_mask_a, sorted_p_a, torch.zeros_like(sorted_p_a))
+        sorted_v_a = torch.where(sorted_mask_a, sorted_v_a, torch.zeros_like(sorted_v_a))
 
         p_feats = torch.cat([sorted_p_b, sorted_p_a, dp], dim=-1)
         v_feats = torch.cat([sorted_v_b, sorted_v_a, dv], dim=-1)

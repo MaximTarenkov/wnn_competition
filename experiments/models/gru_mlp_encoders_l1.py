@@ -44,19 +44,33 @@ class GRUWithEncoders(nn.Module):
         self.head = nn.Linear(hidden_dim, output_dim)
 
     def _extract_l1(self, p_b, v_b, p_a, v_a):
-        best_bid_p, bid_idx = torch.max(p_b, dim=-1, keepdim=True)
+        mask_b = (v_b > 0.0) & (p_b > 0.0)
+        p_b_key = torch.where(mask_b, p_b, torch.full_like(p_b, -1e6)).detach()
+        bid_idx = torch.argmax(p_b_key, dim=-1, keepdim=True)
+
+        best_bid_p = torch.gather(p_b, dim=-1, index=bid_idx)
         best_bid_v = torch.gather(v_b, dim=-1, index=bid_idx)
 
-        p_a_safe = torch.where(p_a <= 0.0, torch.full_like(p_a, float("inf")), p_a)
-        best_ask_p, ask_idx = torch.min(p_a_safe, dim=-1, keepdim=True)
-        best_ask_p = torch.where(torch.isinf(best_ask_p), best_bid_p, best_ask_p)
+        has_valid_b = mask_b.any(dim=-1, keepdim=True)
+        best_bid_p = torch.where(has_valid_b, best_bid_p, torch.zeros_like(best_bid_p))
+        best_bid_v = torch.where(has_valid_b, best_bid_v, torch.zeros_like(best_bid_v))
+
+        mask_a = (v_a > 0.0) & (p_a > 0.0)
+        p_a_key = torch.where(mask_a, p_a, torch.full_like(p_a, 1e6)).detach()
+        ask_idx = torch.argmin(p_a_key, dim=-1, keepdim=True)
+
+        best_ask_p = torch.gather(p_a, dim=-1, index=ask_idx)
         best_ask_v = torch.gather(v_a, dim=-1, index=ask_idx)
 
-        spread = best_ask_p - best_bid_p
+        has_valid_a = mask_a.any(dim=-1, keepdim=True)
+        best_ask_p = torch.where(has_valid_a, best_ask_p, best_bid_p)
+        best_ask_v = torch.where(has_valid_a, best_ask_v, torch.zeros_like(best_ask_v))
+
+        spread = torch.clamp(best_ask_p - best_bid_p, min=0.0)
         mid = 0.5 * (best_bid_p + best_ask_p)
 
         vol_sum = best_bid_v + best_ask_v + 1e-6
-        imbalance = (best_bid_v - best_ask_v) / vol_sum
+        imbalance = torch.clamp((best_bid_v - best_ask_v) / vol_sum, -1.0, 1.0)
 
         return spread, imbalance, mid
 
