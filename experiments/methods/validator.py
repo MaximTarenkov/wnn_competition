@@ -1,32 +1,41 @@
 import numpy as np
+import pyarrow.feather as feather
 import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset, DataLoader
 from utils import GlobalAccumulator, FEATURE_COLUMNS, TARGET_COLUMNS
 
 
-class ParquetValDataset(Dataset):
-    def __init__(self, parquet_path, sample_stride=1):
-        self.parquet_path = parquet_path
-        parquet_file = pq.ParquetFile(parquet_path)
-        self.indices = list(range(0, parquet_file.num_row_groups, sample_stride))
-        self.parquet = None
-        self.load_cols = FEATURE_COLUMNS + list(TARGET_COLUMNS) + ['need_prediction', 'is_scored']
+class ValDataset(Dataset):
+    def __init__(self, feather_path, parquet_meta_path, sample_stride=1):
+        self.table = feather.read_table(feather_path, memory_map=True)
+
+        parquet_file = pq.ParquetFile(parquet_meta_path)
+        num_rg = parquet_file.num_row_groups
+        
+        row_counts = [parquet_file.metadata.row_group(i).num_rows for i in range(num_rg)]
+        
+        self.offsets = np.cumsum([0] + row_counts)
+        self.indices = list(range(0, num_rg, sample_stride))
+
+        self.feature_cols = FEATURE_COLUMNS
+        self.target_cols = list(TARGET_COLUMNS)
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        if self.parquet is None:
-            self.parquet = pq.ParquetFile(self.parquet_path)
+        rg_idx = self.indices[idx]
+        start_row = self.offsets[rg_idx]
+        length = self.offsets[rg_idx + 1] - start_row
 
-        table = self.parquet.read_row_group(self.indices[idx], columns=self.load_cols)
+        sub_table = self.table.slice(start_row, length)
 
-        features = table.select(FEATURE_COLUMNS).to_pandas().to_numpy(dtype=np.float32).copy()
-        targets = table.select(TARGET_COLUMNS).to_pandas().to_numpy(dtype=np.float32).copy()
+        features = sub_table.select(self.feature_cols).to_pandas().to_numpy(dtype=np.float32)
+        targets = sub_table.select(self.target_cols).to_pandas().to_numpy(dtype=np.float32)
 
-        is_scored = table['is_scored'].to_numpy().astype(bool)
-        need_pred = table['need_prediction'].to_numpy().astype(bool)
+        is_scored = sub_table['is_scored'].to_numpy().astype(bool)
+        need_pred = sub_table['need_prediction'].to_numpy().astype(bool)
         mask = is_scored & need_pred
 
         return (
@@ -37,12 +46,12 @@ class ParquetValDataset(Dataset):
 
 
 @torch.inference_mode()
-def evaluate(model, parquet_path, device, sample_stride=1, batch_size=8, num_workers=2):
+def evaluate(model, feather_path, parquet_meta_path, device, sample_stride=1, batch_size=8, num_workers=2):
     model.eval()
     device = torch.device(device)
     use_cuda = device.type == 'cuda'
 
-    val_dataset = ParquetValDataset(parquet_path, sample_stride=sample_stride)
+    val_dataset = ValDataset(feather_path, parquet_meta_path, sample_stride=sample_stride)
     
     val_loader = DataLoader(
         val_dataset,
@@ -50,8 +59,7 @@ def evaluate(model, parquet_path, device, sample_stride=1, batch_size=8, num_wor
         shuffle=False,
         num_workers=num_workers,
         pin_memory=use_cuda,
-        persistent_workers=(num_workers > 0),
-        prefetch_factor=2 if num_workers > 0 else None
+        persistent_workers=(num_workers > 0)
     )
 
     accumulator = GlobalAccumulator()
@@ -72,23 +80,20 @@ def evaluate(model, parquet_path, device, sample_stride=1, batch_size=8, num_wor
     return accumulator.result()
 
 
-# Несмотря на то, что этот метод добавлен, обучать модель на 2000 без вектора предыдущего состояния оптимальнее, чем обучать с ним или на полной последовательности (эмпирически)
-# Чанковый инференс не ускоряет валидацию
 @torch.inference_mode()
-def evaluate_chunked(model, parquet_path, device, chunk_size=2000, sample_stride=1, batch_size=8, num_workers=2):
+def evaluate_chunked(model, feather_path, parquet_meta_path, device, chunk_size=2000, sample_stride=1, batch_size=8, num_workers=2):
     model.eval()
     device = torch.device(device)
     use_cuda = device.type == 'cuda'
 
-    val_dataset = ParquetValDataset(parquet_path, sample_stride=sample_stride)
+    val_dataset = ValDataset(feather_path, parquet_meta_path, sample_stride=sample_stride)
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=use_cuda,
-        persistent_workers=(num_workers > 0),
-        prefetch_factor=2 if num_workers > 0 else None
+        persistent_workers=(num_workers > 0)
     )
 
     accumulator = GlobalAccumulator()

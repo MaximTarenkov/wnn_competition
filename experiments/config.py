@@ -10,6 +10,9 @@ class Config:
     train_feat_mmap: str = "../datasets/train_features.mmap"
     train_targ_mmap: str = "../datasets/train_targets.mmap"
 
+    valid_feather_path: str = "../datasets/val_mmap.feather" 
+    valid_parquet_meta_path: str = "../datasets/valid.parquet"
+
     runs_dir: str = "runs"
 
     seeds: List[int] = field(default_factory=lambda: [22252, 3327]) # [1, 2, 3, 4, 5, 6, 67, 7, 8, 9] # , 15762, 5575
