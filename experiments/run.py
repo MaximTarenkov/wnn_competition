@@ -22,6 +22,14 @@ from models import gru_chunked_noshuffle
 import models.base_gru_chunked as exp_chunked
 import models.base_gru_full as exp_full
 
+import torch
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
+
+import dataset
+
 
 def set_seed(seed):
     random.seed(seed)
@@ -47,7 +55,8 @@ def run_experiment(exp_name, model_module, method_module, cfg):
         set_seed(seed)
 
         model = model_module.create_model(cfg)
-        train_loader = model_module.get_dataloader(cfg, seed=seed)
+        #train_loader = model_module.get_dataloader(cfg, seed=seed)
+        train_loader = dataset.get_train_dataloader(cfg, seed=seed)
 
         final_full_wp = method_module.train_seed(model, train_loader, cfg, exp_name, seed)
         exp_results.append({"seed": seed, "final_full_wp": final_full_wp})

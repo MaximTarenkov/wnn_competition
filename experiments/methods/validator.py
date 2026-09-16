@@ -2,7 +2,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset, DataLoader
-from utils import BlockAccumulator, FEATURE_COLUMNS, TARGET_COLUMNS
+from utils import GlobalAccumulator, FEATURE_COLUMNS, TARGET_COLUMNS
 
 
 class ParquetValDataset(Dataset):
@@ -54,7 +54,7 @@ def evaluate(model, parquet_path, device, sample_stride=1, batch_size=8, num_wor
         prefetch_factor=2 if num_workers > 0 else None
     )
 
-    accumulator = BlockAccumulator()
+    accumulator = GlobalAccumulator()
 
     for batch_features, batch_targets, batch_masks in val_loader:
         x = batch_features.to(device, non_blocking=use_cuda)
@@ -72,6 +72,8 @@ def evaluate(model, parquet_path, device, sample_stride=1, batch_size=8, num_wor
     return accumulator.result()
 
 
+# Несмотря на то, что этот метод добавлен, обучать модель на 2000 без вектора предыдущего состояния оптимальнее, чем обучать с ним или на полной последовательности (эмпирически)
+# Чанковый инференс не ускоряет валидацию
 @torch.inference_mode()
 def evaluate_chunked(model, parquet_path, device, chunk_size=2000, sample_stride=1, batch_size=8, num_workers=2):
     model.eval()
@@ -89,7 +91,7 @@ def evaluate_chunked(model, parquet_path, device, chunk_size=2000, sample_stride
         prefetch_factor=2 if num_workers > 0 else None
     )
 
-    accumulator = BlockAccumulator()
+    accumulator = GlobalAccumulator()
 
     for batch_features, batch_targets, batch_masks in val_loader:
         B, T, D = batch_features.shape

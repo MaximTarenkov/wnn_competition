@@ -69,7 +69,7 @@ class BaselineGRU(nn.Module):
         )
 
         with torch.no_grad():
-            for name, param in self.gru.named_parameters():
+            for name, param in self.gru.named_parameters(): # По канонам Chrono init инициализируем только первый слой. Другие слои инициализировать нет смысла, модель хуже показывает себя. В общем, по метрикам даже так инициализация не лучше байзлайнового.
                 if "bias_ih_l0" in name:
                     h_dim = param.size(0) // 3
                     param[0:h_dim].fill_(2.5)

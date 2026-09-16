@@ -96,7 +96,7 @@ class GRUWithEncoders(nn.Module):
         best_bid_v = torch.gather(v_b, dim=-1, index=bid_idx)
 
         best_ask_p, ask_idx = torch.min(p_a, dim=-1, keepdim=True)
-        best_ask_v = torch.gather(v_a, dim=-1, index=ask_idx)
+        best_ask_v = torch.gather(v_a, dim=-1, index=ask_idx) # Можно применить маскирование, но тут намеренно игнорируешь, так как она показала плохой результат
 
         spread = best_ask_p - best_bid_p
         mid = 0.5 * (best_bid_p + best_ask_p)

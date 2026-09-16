@@ -121,8 +121,9 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
 
-            out = model(x)
-            preds = out[0] if isinstance(out, tuple) else out
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                out = model(x)
+                preds = out[0] if isinstance(out, tuple) else out
 
             loss = weighted_pearson_loss(preds, y)
             loss.backward()

@@ -1,4 +1,4 @@
-"""Competition callback and clipped block-wise Weighted Pearson scorer."""
+"""Competition callback with legacy block-wise WP and current Global WP scorers."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -51,6 +51,24 @@ def weighted_pearson(target, prediction):
     return float(np.clip(covariance / (target_std * prediction_std), -1.0, 1.0))
 
 
+def global_weighted_pearson(targets, predictions):
+    """Global WP over all selected rows, averaged across t0 and t1.
+
+    ``targets`` and ``predictions`` must already contain exactly the rows that
+    participate in scoring (``need_prediction & is_scored``).  Clipping and
+    weighting are delegated to the legacy ``weighted_pearson`` implementation
+    so both metrics use the exact same per-target WP definition.
+    """
+    targets = np.asarray(targets, dtype=np.float32)
+    predictions = np.asarray(predictions, dtype=np.float32)
+    if targets.shape != predictions.shape or targets.ndim != 2 or targets.shape[1] != 2:
+        raise ValueError('expected equal (n_rows, 2) target and prediction arrays')
+    if targets.shape[0] == 0:
+        raise ValueError('no selected rows')
+    values = [weighted_pearson(targets[:, j], predictions[:, j]) for j in range(2)]
+    return float(np.mean(values, dtype=np.float64))
+
+
 class BlockAccumulator:
     def __init__(self):
         self.scores = []
@@ -92,6 +110,91 @@ class BlockAccumulator:
                 'aggregation': 'equal mean of eligible block-wise two-target clipped Weighted Pearson'}
 
 
+class GlobalAccumulator:
+    """Streaming accumulator for the current Global Weighted Pearson metric.
+
+    Unlike ``BlockAccumulator``, sequence boundaries do not affect correlation:
+    sufficient statistics are accumulated across every selected row in the
+    evaluated dataset, independently for t0 and t1.
+    """
+
+    def __init__(self):
+        self.blocks_seen = 0
+        self.selected_rows = 0
+        self.sum_w = np.zeros(2, dtype=np.float64)
+        self.sum_wy = np.zeros(2, dtype=np.float64)
+        self.sum_wp = np.zeros(2, dtype=np.float64)
+        self.sum_wyy = np.zeros(2, dtype=np.float64)
+        self.sum_wpp = np.zeros(2, dtype=np.float64)
+        self.sum_wyp = np.zeros(2, dtype=np.float64)
+
+    def add(self, targets, predictions, mask):
+        targets = np.asarray(targets, dtype=np.float32)
+        predictions = np.asarray(predictions, dtype=np.float32)
+        mask = np.asarray(mask, dtype=bool)
+        if targets.shape != (SEQUENCE_LENGTH, 2) or predictions.shape != targets.shape or mask.shape != (SEQUENCE_LENGTH,):
+            raise ValueError('one accumulator call must contain exactly one complete 20k block')
+        if np.any(mask[:WARMUP]):
+            raise ValueError('warm-up rows cannot be scored')
+        if not np.isfinite(targets).all() or not np.isfinite(predictions[WARMUP:]).all():
+            raise ValueError('nonfinite labels or required predictions')
+
+        self.blocks_seen += 1
+        n_selected = int(mask.sum())
+        self.selected_rows += n_selected
+        if n_selected == 0:
+            return
+
+        y = np.clip(targets[mask], -METRIC_CLIP, METRIC_CLIP).astype(np.float64)
+        p = np.clip(predictions[mask], -METRIC_CLIP, METRIC_CLIP).astype(np.float64)
+        w = np.abs(y)
+
+        self.sum_w += np.sum(w, axis=0, dtype=np.float64)
+        self.sum_wy += np.sum(w * y, axis=0, dtype=np.float64)
+        self.sum_wp += np.sum(w * p, axis=0, dtype=np.float64)
+        self.sum_wyy += np.sum(w * y * y, axis=0, dtype=np.float64)
+        self.sum_wpp += np.sum(w * p * p, axis=0, dtype=np.float64)
+        self.sum_wyp += np.sum(w * y * p, axis=0, dtype=np.float64)
+
+    def result(self):
+        if self.selected_rows == 0:
+            raise ValueError('no selected rows')
+
+        values = np.zeros(2, dtype=np.float64)
+        for j in range(2):
+            total = self.sum_w[j]
+            if total < 1e-8:
+                values[j] = 0.0
+                continue
+
+            target_mean = self.sum_wy[j] / total
+            prediction_mean = self.sum_wp[j] / total
+            covariance = self.sum_wyp[j] / total - target_mean * prediction_mean
+            target_var = self.sum_wyy[j] / total - target_mean * target_mean
+            prediction_var = self.sum_wpp[j] / total - prediction_mean * prediction_mean
+
+            # Tiny negative values can arise from float64 roundoff.
+            target_var = max(target_var, 0.0)
+            prediction_var = max(prediction_var, 0.0)
+            target_std = np.sqrt(target_var)
+            prediction_std = np.sqrt(prediction_var)
+            if target_std <= 1e-8 or prediction_std <= 1e-8:
+                values[j] = 0.0
+            else:
+                values[j] = np.clip(covariance / (target_std * prediction_std), -1.0, 1.0)
+
+        score = float(values.mean())
+        return {'t0': float(values[0]), 't1': float(values[1]),
+                # Keep the old key for callers that already consume scorer output.
+                'weighted_pearson': score,
+                'global_weighted_pearson': score,
+                'blocks': self.blocks_seen,
+                'selected_rows': self.selected_rows,
+                'effective_scored_rows': self.selected_rows,
+                'metric_clip': [-METRIC_CLIP, METRIC_CLIP],
+                'aggregation': 'global two-target clipped Weighted Pearson over all selected rows'}
+
+
 def validate_sequence(table):
     if table.num_rows != SEQUENCE_LENGTH:
         raise ValueError('each row group must be exactly one 20k sequence')
@@ -114,7 +217,7 @@ class ScorerStepByStep:
             raise ValueError('local scoring requires the labeled validation schema')
 
     def score(self, model):
-        accumulator = BlockAccumulator()
+        accumulator = GlobalAccumulator()
         seen = set()
         for group in range(self.parquet.num_row_groups):
             table = self.parquet.read_row_group(group, use_threads=False)
