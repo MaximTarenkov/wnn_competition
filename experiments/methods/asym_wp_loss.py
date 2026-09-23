@@ -9,7 +9,8 @@ import torch
 from methods.validator import evaluate
 from experiment_logger import ExperimentLogger
 
-def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8):
+
+def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8, lambda_corr: float = 0.1):
 
     pred = pred.float()
     target = target.float()
@@ -18,6 +19,7 @@ def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float =
     t_flat = torch.clamp(target.reshape(-1, 2), -2.0, 2.0)
     weights = torch.abs(t_flat).clamp(min=eps)
 
+    # 1. Базовый Weighted Pearson Loss
     loss = 0.0
     for i in range(2):
         p, t, w = p_flat[:, i], t_flat[:, i], weights[:, i]
@@ -33,7 +35,20 @@ def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float =
         corr = cov / (torch.sqrt(p_var + eps) * torch.sqrt(t_var + eps) + eps)
         loss = loss - corr
 
-    return loss / 2.0
+    loss = loss / 2.0
+
+    # 2. Штраф за расхождение межтаргетной корреляции: lambda * (corr(p0, p1) - corr(t0, t1))^2
+    p0 = p_flat[:, 0] - torch.mean(p_flat[:, 0])
+    p1 = p_flat[:, 1] - torch.mean(p_flat[:, 1])
+    t0 = t_flat[:, 0] - torch.mean(t_flat[:, 0])
+    t1 = t_flat[:, 1] - torch.mean(t_flat[:, 1])
+
+    corr_p = torch.sum(p0 * p1) / (torch.sqrt(torch.sum(p0 ** 2) + eps) * torch.sqrt(torch.sum(p1 ** 2) + eps) + eps)
+    corr_t = torch.sum(t0 * t1) / (torch.sqrt(torch.sum(t0 ** 2) + eps) * torch.sqrt(torch.sum(t1 ** 2) + eps) + eps)
+
+    corr_penalty = (torch.clamp(corr_p, -1.0, 1.0) - torch.clamp(corr_t, -1.0, 1.0)) ** 2
+
+    return loss + lambda_corr * corr_penalty
 
 
 
@@ -160,16 +175,6 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                     break
 
                 model.train()
-
-        # if not early_stop_triggered:
-        #     full_res = evaluate(model, cfg, device, sample_stride=1)
-        #     full_wp = full_res['weighted_pearson']
-        #     logger.info(
-        #         f"=== FULL VAL (100%) | End of Ep {epoch:02d} | "
-        #         f"WP: {full_wp:.5f} (t0: {full_res['t0']:.4f}, t1: {full_res['t1']:.4f}) ==="
-        #     )
-        #     logger.log_val_event(epoch, global_step, "full_100pct", current_lr, full_res, patience)
-        #     model.train()
 
         if early_stop_triggered:
             break

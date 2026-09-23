@@ -9,6 +9,7 @@ import torch
 from methods.validator import evaluate
 from experiment_logger import ExperimentLogger
 
+
 def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8):
 
     pred = pred.float()
@@ -37,6 +38,8 @@ def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float =
 
 
 
+
+
 def train_seed(model, train_loader, cfg, exp_name, seed):
     logger = ExperimentLogger(cfg.runs_dir, exp_name, seed)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
@@ -45,6 +48,13 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
     num_batches = len(train_loader)
+    total_steps = cfg.max_epochs * num_batches
+
+    # Пошаговый Cosine Annealing Scheduler от cfg.lr до 1e-6
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_steps, eta_min=getattr(cfg, "min_lr", 1e-6)
+    )
+
     val_interval = max(1, num_batches // 5)
     val_steps_in_epoch = set([val_interval * k for k in range(1, 5)])
     val_steps_in_epoch.add(num_batches)
@@ -57,7 +67,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
     global_step = 0
     best_checkpoint_path = os.path.join(logger.run_dir, "best_sub_model.pt")
 
-    logger.info(f"Старт обучения | Батчей в эпохе: {num_batches}")
+    logger.info(f"Старт обучения | Батчей в эпохе: {num_batches} | Всего шагов: {total_steps}")
 
     step_loss_acc = 0.0
     step_wp_acc = 0.0
@@ -100,6 +110,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                scheduler.step()
 
                 step_loss = loss.item()
 
@@ -113,6 +124,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                scheduler.step()
 
                 step_loss = loss.item()
 
@@ -160,16 +172,6 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                     break
 
                 model.train()
-
-        # if not early_stop_triggered:
-        #     full_res = evaluate(model, cfg, device, sample_stride=1)
-        #     full_wp = full_res['weighted_pearson']
-        #     logger.info(
-        #         f"=== FULL VAL (100%) | End of Ep {epoch:02d} | "
-        #         f"WP: {full_wp:.5f} (t0: {full_res['t0']:.4f}, t1: {full_res['t1']:.4f}) ==="
-        #     )
-        #     logger.log_val_event(epoch, global_step, "full_100pct", current_lr, full_res, patience)
-        #     model.train()
 
         if early_stop_triggered:
             break

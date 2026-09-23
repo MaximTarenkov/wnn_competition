@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 from methods.validator import evaluate
+from experiment_logger import ExperimentLogger
 
 
 def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8):
@@ -37,59 +38,7 @@ def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float =
     return -torch.mean(corr)
 
 
-class ExperimentLogger:
-    def __init__(self, base_dir, exp_name, seed):
-        seed_dir = Path(base_dir) / exp_name / f"seed_{seed}"
-        if seed_dir.exists():
-            counter = 1
-            while (Path(base_dir) / exp_name / f"seed_{seed}_{counter}").exists():
-                counter += 1
-            seed_dir = Path(base_dir) / exp_name / f"seed_{seed}_{counter}"
 
-        seed_dir.mkdir(parents=True, exist_ok=True)
-        self.run_dir = str(seed_dir)
-
-        self.logger = logging.getLogger(self.run_dir)
-        self.logger.setLevel(logging.INFO)
-        self.logger.handlers = []
-
-        fh = logging.FileHandler(os.path.join(self.run_dir, "run.log"), encoding="utf-8")
-        ch = logging.StreamHandler()
-        fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-        fh.setFormatter(fmt)
-        ch.setFormatter(fmt)
-        self.logger.addHandler(fh)
-        self.logger.addHandler(ch)
-
-        self.csv_path = os.path.join(self.run_dir, "history.csv")
-        with open(self.csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "timestamp", "epoch", "step", "event_type", "lr",
-                "train_loss", "train_wp", "val_wp", "t0", "t1", "patience"
-            ])
-
-    def info(self, msg):
-        self.logger.info(msg)
-
-    def log_train_step(self, epoch, step, lr, train_loss, train_wp):
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                now_str, epoch, step, "train_step", f"{lr:.6e}",
-                f"{train_loss:.6f}", f"{train_wp:.6f}", "", "", "", ""
-            ])
-
-    def log_val_event(self, epoch, step, event_type, lr, res, patience):
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                now_str, epoch, step, event_type, f"{lr:.6e}",
-                "", "", f"{res['weighted_pearson']:.6f}",
-                f"{res['t0']:.6f}", f"{res['t1']:.6f}", patience
-            ])
 
 
 def train_seed(model, train_loader, cfg, exp_name, seed):
@@ -156,7 +105,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
-                step_loss = loss.item()
+                step_loss = loss.detach()
 
             else:
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
@@ -168,7 +117,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
-                step_loss = loss.item()
+                step_loss = loss.detach()
 
             step_loss_acc += step_loss
             step_wp_acc += (-step_loss)
@@ -177,8 +126,8 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
             current_lr = optimizer.param_groups[0]['lr']
 
             if global_step % cfg.log_interval == 0:
-                avg_train_loss = step_loss_acc / step_count
-                avg_train_wp = step_wp_acc / step_count
+                avg_train_loss = (step_loss_acc / step_count).item()
+                avg_train_wp = -avg_train_loss
                 step_loss_acc = 0.0
                 step_wp_acc = 0.0
                 step_count = 0
@@ -215,15 +164,15 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
 
                 model.train()
 
-        if not early_stop_triggered:
-            full_res = evaluate(model, cfg, device, sample_stride=1)
-            full_wp = full_res['weighted_pearson']
-            logger.info(
-                f"=== FULL VAL (100%) | End of Ep {epoch:02d} | "
-                f"WP: {full_wp:.5f} (t0: {full_res['t0']:.4f}, t1: {full_res['t1']:.4f}) ==="
-            )
-            logger.log_val_event(epoch, global_step, "full_100pct", current_lr, full_res, patience)
-            model.train()
+        # if not early_stop_triggered:
+        #     full_res = evaluate(model, cfg, device, sample_stride=1)
+        #     full_wp = full_res['weighted_pearson']
+        #     logger.info(
+        #         f"=== FULL VAL (100%) | End of Ep {epoch:02d} | "
+        #         f"WP: {full_wp:.5f} (t0: {full_res['t0']:.4f}, t1: {full_res['t1']:.4f}) ==="
+        #     )
+        #     logger.log_val_event(epoch, global_step, "full_100pct", current_lr, full_res, patience)
+        #     model.train()
 
         if early_stop_triggered:
             break

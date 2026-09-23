@@ -10,3 +10,15 @@ requirements.txt
 utils_old.py
 METRIC.md
 README_comp.md
+runs_old/
+.vscode/
+.idea/
+*.zip
+submission/
+submission_*/
+exports/
+output.pdf
+*.txt
+*.html
+.DS_Store
+analysis/

@@ -22,6 +22,10 @@ class GRUWithEncoders(nn.Module):
         )
         self.add_indices = list(range(104, 112))
 
+        self.register_buffer('price_idx', torch.tensor(self.price_indices, dtype=torch.long))
+        self.register_buffer('vol_idx', torch.tensor(self.vol_indices, dtype=torch.long))
+        self.register_buffer('add_idx', torch.tensor(self.add_indices, dtype=torch.long))
+
         self.price_encoder = nn.Sequential(
             nn.Linear(len(self.price_indices), 64), nn.SiLU()
         )
@@ -42,14 +46,17 @@ class GRUWithEncoders(nn.Module):
         self.head = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x, h=None):
-        p = self.price_encoder(x[:, :, self.price_indices])
-        v = self.vol_encoder(x[:, :, self.vol_indices])
-        a = self.add_encoder(x[:, :, self.add_indices])
+        B, T, D = x.shape
 
-        combined = torch.cat([p, v, a], dim=-1)
+        x_flat = x.reshape(B * T, D)
+
+        p = self.price_encoder(x_flat[:, self.price_idx])
+        v = self.vol_encoder(x_flat[:, self.vol_idx])
+        a = self.add_encoder(x_flat[:, self.add_idx])
+
+        combined = torch.cat([p, v, a], dim=-1).view(B, T, 160).to(x.dtype)
 
         out, h_next = self.gru(combined, h)
-
         pred = 2.0 * torch.tanh(self.head(out))
 
         return pred, h_next
@@ -62,4 +69,3 @@ def create_model(cfg) -> nn.Module:
         num_layers=cfg.num_layers,
         output_dim=cfg.output_dim,
     )
-

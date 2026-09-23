@@ -16,10 +16,10 @@ class Config:
 
     runs_dir: str = "runs"
 
-    seeds: List[int] = field(default_factory=lambda: [22252, 3327]) # [1, 2, 3, 4, 5, 6, 67, 7, 8, 9] # , 15762, 5575
+    seeds: List[int] = field(default_factory=lambda: [18492, 8222, 2304, 28775]) # [1, 2, 3, 4, 5, 6, 67, 7, 8, 9] # , 22252, 3327, 15762, 5575  # 
 
-    max_epochs: int = 2
-    lr: float = 1e-3
+    max_epochs: int = 5
+    lr: float = 1e-4
     weight_decay: float = 1e-4
     log_interval: int = 25
     device: str = "cuda"
@@ -30,4 +30,6 @@ class Config:
     output_dim: int = 2
 
     chunk_size: int = 2000
-    full_batch_size: int = 3
+    full_batch_size: int = 5
+
+    focal_gamma: float = 2.0

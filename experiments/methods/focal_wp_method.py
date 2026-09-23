@@ -1,5 +1,4 @@
 import os
-import csv
 import json
 import logging
 from datetime import datetime
@@ -9,18 +8,38 @@ import torch
 from methods.validator import evaluate
 from experiment_logger import ExperimentLogger
 
-def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8):
 
+def focal_weighted_pearson_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    gamma: float = 1.0,
+    eps: float = 1e-8
+):
+    """
+    Focal Hard Example Mining Loss для Weighted Pearson.
+    
+    w_base = |y|
+    abs_err = |p - y|
+    w_focal = |y| * (1.0 + gamma * abs_err)
+    
+    - Легкие/угаданные примеры (abs_err ~ 0): вес = |y| * 1.0
+    - Катастрофические ошибки на импульсах (abs_err ~ 2.0): вес = |y| * 3.0 (при gamma=1.0)
+    - Околонулевой шум (|y| ~ 0): вес остается около нуля (нет переобучения под хаос).
+    """
     pred = pred.float()
     target = target.float()
 
     p_flat = pred.reshape(-1, 2)
     t_flat = torch.clamp(target.reshape(-1, 2), -2.0, 2.0)
-    weights = torch.abs(t_flat).clamp(min=eps)
+    w_base = torch.abs(t_flat).clamp(min=eps)
+
+    # Точечная абсолютная ошибка для фокусировки на сложных примерах
+    abs_err = torch.abs(p_flat - t_flat).detach()
+    focal_weights = w_base * (1.0 + gamma * abs_err)
 
     loss = 0.0
     for i in range(2):
-        p, t, w = p_flat[:, i], t_flat[:, i], weights[:, i]
+        p, t, w = p_flat[:, i], t_flat[:, i], focal_weights[:, i]
         w_sum = torch.sum(w)
         p_mean = torch.sum(w * p) / w_sum
         t_mean = torch.sum(w * t) / w_sum
@@ -36,7 +55,6 @@ def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float =
     return loss / 2.0
 
 
-
 def train_seed(model, train_loader, cfg, exp_name, seed):
     logger = ExperimentLogger(cfg.runs_dir, exp_name, seed)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
@@ -45,6 +63,13 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
     num_batches = len(train_loader)
+    total_steps = cfg.max_epochs * num_batches
+
+    # Cosine Annealing Scheduler от cfg.lr до min_lr (1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_steps, eta_min=getattr(cfg, "min_lr", 1e-7)
+    )
+
     val_interval = max(1, num_batches // 5)
     val_steps_in_epoch = set([val_interval * k for k in range(1, 5)])
     val_steps_in_epoch.add(num_batches)
@@ -57,7 +82,8 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
     global_step = 0
     best_checkpoint_path = os.path.join(logger.run_dir, "best_sub_model.pt")
 
-    logger.info(f"Старт обучения | Батчей в эпохе: {num_batches}")
+    gamma = getattr(cfg, "focal_gamma", 1.0)
+    logger.info(f"Старт Focal WP (Gamma={gamma}) | Батчей: {num_batches} | Шагов: {total_steps}")
 
     step_loss_acc = 0.0
     step_wp_acc = 0.0
@@ -79,43 +105,30 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
 
                 for c in range(num_chunks):
                     x_chunk = x[:, c, :, :]
-
                     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                         out = model(x_chunk, h)
-                        if isinstance(out, tuple):
-                            pred_chunk, h = out
-                        else:
-                            pred_chunk, h = out, None
+                        pred_chunk, h = out if isinstance(out, tuple) else (out, None)
 
                     preds_list.append(pred_chunk)
-
                     if h is not None:
-                        h = h.detach() 
+                        h = h.detach()
 
                 all_preds = torch.cat(preds_list, dim=1)
                 y_full = y.view(B, -1, y.shape[-1])
-
-                loss = weighted_pearson_loss(all_preds, y_full)
-
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-
-                step_loss = loss.item()
+                loss = focal_weighted_pearson_loss(all_preds, y_full, gamma=gamma)
 
             else:
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     out = model(x)
                     preds = out[0] if isinstance(out, tuple) else out
+                loss = focal_weighted_pearson_loss(preds, y, gamma=gamma)
 
-                loss = weighted_pearson_loss(preds, y)
-                loss.backward()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            scheduler.step()
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-
-                step_loss = loss.item()
-
+            step_loss = loss.item()
             step_loss_acc += step_loss
             step_wp_acc += (-step_loss)
             step_count += 1
@@ -125,13 +138,10 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
             if global_step % cfg.log_interval == 0:
                 avg_train_loss = step_loss_acc / step_count
                 avg_train_wp = step_wp_acc / step_count
-                step_loss_acc = 0.0
-                step_wp_acc = 0.0
-                step_count = 0
-
+                step_loss_acc, step_wp_acc, step_count = 0.0, 0.0, 0
                 logger.info(
                     f"Ep {epoch:02d} | Step {step_in_epoch:04d}/{num_batches} (Global {global_step:05d}) | "
-                    f"LR: {current_lr:.2e} | Train Loss: {avg_train_loss:+.4f} | Train WP: {avg_train_wp:.4f}"
+                    f"LR: {current_lr:.2e} | Train Loss: {avg_train_loss:+.4f} | WP: {avg_train_wp:.4f}"
                 )
                 logger.log_train_step(epoch, global_step, current_lr, avg_train_loss, avg_train_wp)
 
@@ -155,21 +165,11 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                 logger.log_val_event(epoch, global_step, "sub_10pct", current_lr, sub_res, patience)
 
                 if patience >= patience_limit:
-                    logger.info(f"Early Stopping: достигнут лимит стагнации ({patience_limit} проверок).")
+                    logger.info("Early Stopping: достигнут лимит стагнации.")
                     early_stop_triggered = True
                     break
 
                 model.train()
-
-        # if not early_stop_triggered:
-        #     full_res = evaluate(model, cfg, device, sample_stride=1)
-        #     full_wp = full_res['weighted_pearson']
-        #     logger.info(
-        #         f"=== FULL VAL (100%) | End of Ep {epoch:02d} | "
-        #         f"WP: {full_wp:.5f} (t0: {full_res['t0']:.4f}, t1: {full_res['t1']:.4f}) ==="
-        #     )
-        #     logger.log_val_event(epoch, global_step, "full_100pct", current_lr, full_res, patience)
-        #     model.train()
 
         if early_stop_triggered:
             break

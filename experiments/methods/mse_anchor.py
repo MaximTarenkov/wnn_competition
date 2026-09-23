@@ -1,6 +1,7 @@
 import os
 import csv
 import json
+import math
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -9,8 +10,13 @@ import torch
 from methods.validator import evaluate
 from experiment_logger import ExperimentLogger
 
-def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8):
 
+def weighted_pearson_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    lambda_anchor: float = 0.0,
+    eps: float = 1e-8
+):
     pred = pred.float()
     target = target.float()
 
@@ -31,10 +37,16 @@ def weighted_pearson_loss(pred: torch.Tensor, target: torch.Tensor, eps: float =
         t_var = torch.sum(w * t_diff ** 2) / w_sum
 
         corr = cov / (torch.sqrt(p_var + eps) * torch.sqrt(t_var + eps) + eps)
-        loss = loss - corr
+        target_loss = -corr
+
+        # Вспомогательный взвешенный якорь (Weighted MSE / Var_w(y))
+        if lambda_anchor > 0.0:
+            wmse = torch.sum(w * (p - t) ** 2) / w_sum
+            target_loss = target_loss + lambda_anchor * (wmse / (t_var + eps))
+
+        loss = loss + target_loss
 
     return loss / 2.0
-
 
 
 def train_seed(model, train_loader, cfg, exp_name, seed):
@@ -45,6 +57,16 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
     num_batches = len(train_loader)
+    total_steps = cfg.max_epochs * num_batches
+
+    # Стартовое значение якоря (0.05-0.1)
+    lambda_init = getattr(cfg, "lambda_anchor", 0.05)
+
+    # Пошаговый Cosine Annealing Scheduler от cfg.lr до 1e-6
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_steps, eta_min=getattr(cfg, "min_lr", 1e-6)
+    )
+
     val_interval = max(1, num_batches // 5)
     val_steps_in_epoch = set([val_interval * k for k in range(1, 5)])
     val_steps_in_epoch.add(num_batches)
@@ -57,7 +79,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
     global_step = 0
     best_checkpoint_path = os.path.join(logger.run_dir, "best_sub_model.pt")
 
-    logger.info(f"Старт обучения | Батчей в эпохе: {num_batches}")
+    logger.info(f"Старт обучения | Батчей в эпохе: {num_batches} | Всего шагов: {total_steps}")
 
     step_loss_acc = 0.0
     step_wp_acc = 0.0
@@ -71,6 +93,10 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
+
+            # Плавное косинусное затухание коэффициента якоря lambda(t) -> 0
+            progress = min(1.0, global_step / total_steps)
+            lambda_t = 0.5 * lambda_init * (1.0 + math.cos(math.pi * progress))
 
             if x.dim() == 4:
                 B, num_chunks, T_chunk, D = x.shape
@@ -95,11 +121,12 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                 all_preds = torch.cat(preds_list, dim=1)
                 y_full = y.view(B, -1, y.shape[-1])
 
-                loss = weighted_pearson_loss(all_preds, y_full)
+                loss = weighted_pearson_loss(all_preds, y_full, lambda_anchor=lambda_t)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                scheduler.step()
 
                 step_loss = loss.item()
 
@@ -108,11 +135,12 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                     out = model(x)
                     preds = out[0] if isinstance(out, tuple) else out
 
-                loss = weighted_pearson_loss(preds, y)
+                loss = weighted_pearson_loss(preds, y, lambda_anchor=lambda_t)
                 loss.backward()
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                scheduler.step()
 
                 step_loss = loss.item()
 
@@ -131,7 +159,7 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
 
                 logger.info(
                     f"Ep {epoch:02d} | Step {step_in_epoch:04d}/{num_batches} (Global {global_step:05d}) | "
-                    f"LR: {current_lr:.2e} | Train Loss: {avg_train_loss:+.4f} | Train WP: {avg_train_wp:.4f}"
+                    f"LR: {current_lr:.2e} | Lambda: {lambda_t:.4f} | Train Loss: {avg_train_loss:+.4f}"
                 )
                 logger.log_train_step(epoch, global_step, current_lr, avg_train_loss, avg_train_wp)
 
@@ -160,16 +188,6 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
                     break
 
                 model.train()
-
-        # if not early_stop_triggered:
-        #     full_res = evaluate(model, cfg, device, sample_stride=1)
-        #     full_wp = full_res['weighted_pearson']
-        #     logger.info(
-        #         f"=== FULL VAL (100%) | End of Ep {epoch:02d} | "
-        #         f"WP: {full_wp:.5f} (t0: {full_res['t0']:.4f}, t1: {full_res['t1']:.4f}) ==="
-        #     )
-        #     logger.log_val_event(epoch, global_step, "full_100pct", current_lr, full_res, patience)
-        #     model.train()
 
         if early_stop_triggered:
             break

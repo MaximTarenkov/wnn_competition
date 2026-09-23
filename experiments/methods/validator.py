@@ -68,7 +68,7 @@ def evaluate(model, cfg, device, sample_stride=1, batch_size=8, num_workers=2):
         shuffle=False,
         num_workers=num_workers,
         pin_memory=use_cuda,
-        persistent_workers=(num_workers > 0)
+        persistent_workers=False
     )
 
     accumulator = GlobalAccumulator()
