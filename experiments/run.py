@@ -17,7 +17,6 @@ from methods import (
     asym_wp_loss,
     cosine_scheduler_method,
     swa_method,
-    xgb_method,
     mse_anchor,
     dynamic_trimmed_method,
     focal_wp_method
@@ -48,7 +47,6 @@ from models import (
     gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_resgru,
     gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_skip,
     gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_sigm,
-    xgb_model
 )
 import torch
 
