@@ -18,7 +18,7 @@ class Config:
 
     seeds: List[int] = field(default_factory=lambda: [18492, 8222, 2304, 28775]) # [1, 2, 3, 4, 5, 6, 67, 7, 8, 9] # , 22252, 3327, 15762, 5575  # 
 
-    max_epochs: int = 5
+    max_epochs: int = 2
     lr: float = 1e-4
     weight_decay: float = 1e-4
     log_interval: int = 25
