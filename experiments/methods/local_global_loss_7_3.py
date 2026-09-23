@@ -97,48 +97,15 @@ def train_seed(model, train_loader, cfg, exp_name, seed):
             y = y.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
 
-            if x.dim() == 4:
-                B, num_chunks, T_chunk, D = x.shape
-                h = None
-                preds_list = []
-
-                for c in range(num_chunks):
-                    x_chunk = x[:, c, :, :]
-
-                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                        out = model(x_chunk, h)
-                        if isinstance(out, tuple):
-                            pred_chunk, h = out
-                        else:
-                            pred_chunk, h = out, None
-
-                    preds_list.append(pred_chunk)
-
-                    if h is not None:
-                        h = h.detach() 
-
-                all_preds = torch.cat(preds_list, dim=1)
-                y_full = y.view(B, -1, y.shape[-1])
-
-                loss = weighted_pearson_loss(all_preds, y_full)
-
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-
-                step_loss = loss.detach()
-
-            else:
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    out = model(x)
-                    preds = out[0] if isinstance(out, tuple) else out
-
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                out = model(x)
+                preds = out[0] if isinstance(out, tuple) else out
                 loss = weighted_pearson_loss(preds, y)
-                loss.backward()
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-                step_loss = loss.detach()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            step_loss = loss.detach()
 
             step_loss_acc += step_loss
             step_wp_acc += (-step_loss)

@@ -4,14 +4,9 @@ import numpy as np
 import torch
 import gc
 
-# import torch.multiprocessing
-# torch.multiprocessing.set_sharing_strategy('file_system')
-
 from config import Config
 
 import methods.base_method as base_method
-import methods.local_loss as local_loss
-import methods.local_global_loss as local_global_loss
 import methods.local_global_loss_7_3 as local_global_loss_7_3
 from methods import (
     asym_wp_loss,
@@ -20,7 +15,7 @@ from methods import (
     mse_anchor,
     dynamic_trimmed_method,
     focal_wp_method
-    )
+)
 
 from models import (
     base_gru,
@@ -48,7 +43,6 @@ from models import (
     gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_skip,
     gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_sigm,
 )
-import torch
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -62,8 +56,7 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # torch.backends.cudnn.deterministic = True
-    # torch.backends.cudnn.benchmark = False
+
 
 def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
@@ -71,7 +64,7 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
-def run_experiment(exp_name, model_module, method_module, data_mode, cfg):
+def run_experiment(exp_name, model_module, method_module, cfg):
     print(f"СТАРТ ЭКСПЕРИМЕНТА: {exp_name}")
 
     exp_results = []
@@ -81,8 +74,7 @@ def run_experiment(exp_name, model_module, method_module, data_mode, cfg):
         set_seed(seed)
 
         model = model_module.create_model(cfg)
-        #train_loader = model_module.get_dataloader(cfg, seed=seed)
-        train_loader = dataset.get_train_dataloader(cfg, mode=data_mode, seed=seed)
+        train_loader = dataset.get_train_dataloader(cfg, seed=seed)
 
         final_full_wp = method_module.train_seed(model, train_loader, cfg, exp_name, seed)
         exp_results.append({"seed": seed, "final_full_wp": final_full_wp})
@@ -112,49 +104,47 @@ def main():
     cfg = Config()
 
     experiments = [
-        # ("base_gru", base_gru, base_method, "chunk_shuffle"),
-        #("base_gru_12b", base_gru, base_method, "chunk_shuffle"),
-        #("base_gru__6)", base_gru, base_method, "chunk_shuffle"),
-        # ("base_gru__chunk_tbptt",   base_gru, base_method, "chunk_noshuffle"),
-        # ("base_gru__local_loss",        base_gru, local_loss,            "chunk_shuffle"),
-        # ("base_gru__local_global_50_50", base_gru, local_global_loss,    "chunk_shuffle"),
-        # ("base_gru__local_global_70_30", base_gru, local_global_loss_7_3, "chunk_shuffle"),
-        #("base_gru__local_global_70_30_6b", base_gru, local_global_loss_7_3, "chunk_shuffle"),
-        # ("gru_chrono_init",      gru_chrono_init,        base_method, "chunk_shuffle"),
-        #("gru_gated_input_6b",       gru_gated_input,        base_method, "chunk_shuffle"),  
-        # ("gru_gated_output",      gru_gated_output,       base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_6b",      gru_mlp_encoders,       base_method, "chunk_shuffle"),
-        # ("gru_mlp_encoders_sort", gru_mlp_encoders_sort,  base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_l1_6b",   gru_mlp_encoders_l1,    base_method, "chunk_shuffle"),
-        # ("vgru_chunked",          vgru_chunked,           base_method, "chunk_shuffle"),
-        # ("gru_mlp_encoders_disentangled_l1_6b", gru_disentangled_encoders_l1, base_method, "chunk_shuffle"),
-        #("gru_sum_diff_6b", gru_sum_diff, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_micro_6b", gru_mlp_encoders_disentangled_micro, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_micro_highway_6b", gru_mlp_encoders_disentangled_micro_highway, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_micro_coslr_6b", gru_mlp_encoders_disentangled_micro, cosine_scheduler_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_micro_swa_6b", gru_mlp_encoders_disentangled_micro, swa_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_fix_6b", gru_mlp_encoders_disentangled_l1_fix, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_advanced_feats_6b", gru_mlp_encoders_disentangled_advanced_feats, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_two_heads_6b", gru_mlp_encoders_disentangled_two_heads, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_6b", gru_mlp_encoders_disentangled_l1_delta_silu, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_6b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_dualstream_delta_silu_6b", gru_mlp_encoders_disentangled_l1_dualstream_delta_silu, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_expanded_6b", gru_mlp_encoders_disentangled_l1_delta_expanded, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_v2_6b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_v2, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_8b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_resgru", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_resgru, base_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_coslr_5b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, cosine_scheduler_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_skip_coslr_5b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_skip, cosine_scheduler_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_sigm_coslr_5b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_sigm, cosine_scheduler_method, "chunk_shuffle"),
-        #("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_coslr-mse_5b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, mse_anchor, "chunk_shuffle"),
-        ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_coslr_focal_5b_2g", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, focal_wp_method, "chunk_shuffle"),
-    
+        # ("base_gru", base_gru, base_method),
+        # ("base_gru_12b", base_gru, base_method),
+        # ("base_gru__6)", base_gru, base_method),
+        # ("base_gru__local_loss", base_gru, local_loss),
+        # ("base_gru__local_global_50_50", base_gru, local_global_loss),
+        # ("base_gru__local_global_70_30", base_gru, local_global_loss_7_3),
+        # ("base_gru__local_global_70_30_6b", base_gru, local_global_loss_7_3),
+        # ("gru_chrono_init", gru_chrono_init, base_method),
+        # ("gru_gated_input_6b", gru_gated_input, base_method),  
+        # ("gru_gated_output", gru_gated_output, base_method),
+        # ("gru_mlp_encoders_6b", gru_mlp_encoders, base_method),
+        # ("gru_mlp_encoders_sort", gru_mlp_encoders_sort, base_method),
+        # ("gru_mlp_encoders_l1_6b", gru_mlp_encoders_l1, base_method),
+        # ("vgru_chunked", vgru_chunked, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_6b", gru_disentangled_encoders_l1, base_method),
+        # ("gru_sum_diff_6b", gru_sum_diff, base_method),
+        # ("gru_mlp_encoders_disentangled_micro_6b", gru_mlp_encoders_disentangled_micro, base_method),
+        # ("gru_mlp_encoders_disentangled_micro_highway_6b", gru_mlp_encoders_disentangled_micro_highway, base_method),
+        # ("gru_mlp_encoders_disentangled_micro_coslr_6b", gru_mlp_encoders_disentangled_micro, cosine_scheduler_method),
+        # ("gru_mlp_encoders_disentangled_micro_swa_6b", gru_mlp_encoders_disentangled_micro, swa_method),
+        # ("gru_mlp_encoders_disentangled_l1_fix_6b", gru_mlp_encoders_disentangled_l1_fix, base_method),
+        # ("gru_mlp_encoders_disentangled_advanced_feats_6b", gru_mlp_encoders_disentangled_advanced_feats, base_method),
+        # ("gru_mlp_encoders_disentangled_two_heads_6b", gru_mlp_encoders_disentangled_two_heads, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_6b", gru_mlp_encoders_disentangled_l1_delta_silu, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_6b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_dualstream_delta_silu_6b", gru_mlp_encoders_disentangled_l1_dualstream_delta_silu, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_expanded_6b", gru_mlp_encoders_disentangled_l1_delta_expanded, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_v2_6b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_v2, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_8b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_resgru", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_resgru, base_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_coslr_5b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, cosine_scheduler_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_skip_coslr_5b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_skip, cosine_scheduler_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_sigm_coslr_5b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_sigm, cosine_scheduler_method),
+        # ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_coslr-mse_5b", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, mse_anchor),
+        ("gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_coslr_focal_5b_2g", gru_mlp_encoders_disentangled_l1_delta_silu_hotfix, focal_wp_method),
     ]
 
     final_comparison = {}
 
-    for exp_name, model_module, method_module, data_mode in experiments:
-        mean_wp, std_wp = run_experiment(exp_name, model_module, method_module, data_mode, cfg)
+    for exp_name, model_module, method_module in experiments:
+        mean_wp, std_wp = run_experiment(exp_name, model_module, method_module, cfg)
         final_comparison[exp_name] = f"{mean_wp:.5f} ± {std_wp:.5f}"
 
     print("\nИТОГОВОЕ СРАВНЕНИЕ:")
