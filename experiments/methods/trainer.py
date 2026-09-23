@@ -2,6 +2,7 @@ import os
 import json
 import math
 import torch
+import copy
 from torch.optim.swa_utils import AveragedModel
 
 from rich.console import Console
@@ -92,28 +93,36 @@ class UVMetricsColumn(ProgressColumn):
 
 
 class SlotRuntime:
-    def __init__(self, exp_dict, cfg, device, total_stream_steps, base_batch_size):
+    def __init__(self, exp_dict, cfg, device, total_steps, base_batch_size=None):
         self.exp_dict = exp_dict
         self.name = exp_dict["name"]
         self.model_module = exp_dict["model"]
         self.method_module = exp_dict["method"]
 
-        self.target_batch_size = exp_dict.get("batch_size", base_batch_size)
-        self.accum_steps = max(1, self.target_batch_size // base_batch_size)
+        slot_cfg = copy.copy(cfg)
+        for key, value in exp_dict.items():
+            if hasattr(slot_cfg, key):
+                setattr(slot_cfg, key, value)
 
-        self.model = self.model_module.create_model(cfg).to(device)
+        fallback_batch = base_batch_size if base_batch_size is not None else getattr(slot_cfg, "full_batch_size", 5)
+        self.target_batch_size = exp_dict.get("batch_size", fallback_batch)
+        self.accum_steps = exp_dict.get("accum_steps", getattr(slot_cfg, "accum_steps", 1))
 
-        self.lr = exp_dict.get("lr", cfg.lr)
-        self.weight_decay = exp_dict.get("weight_decay", cfg.weight_decay)
+        chunks_per_seq = 20_000 // getattr(slot_cfg, "chunk_size", 2000)
+        self.num_chunks = self.target_batch_size * chunks_per_seq
+
+        self.model = self.model_module.create_model(slot_cfg).to(device)
+
+        self.lr = exp_dict.get("lr", slot_cfg.lr)
+        self.weight_decay = exp_dict.get("weight_decay", slot_cfg.weight_decay)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
-        self.loss_fn, self.scheduler_type, self.loss_step_hook, self.use_swa = self._resolve_method(cfg)
+        self.loss_fn, self.scheduler_type, self.loss_step_hook, self.use_swa = self._resolve_method(slot_cfg)
 
         self.scheduler = None
-        effective_opt_steps = max(1, total_stream_steps // self.accum_steps)
         if self.scheduler_type == "cosine":
             self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=effective_opt_steps, eta_min=getattr(cfg, "min_lr", 1e-6)
+                self.optimizer, T_max=total_steps, eta_min=getattr(slot_cfg, "min_lr", 1e-6)
             )
 
         self.swa_model = AveragedModel(self.model) if self.use_swa else None
@@ -133,33 +142,27 @@ class SlotRuntime:
     def _resolve_method(self, cfg):
         method = self.method_module
         exp = self.exp_dict
+        method_name = getattr(method, "__name__", str(method)).split(".")[-1]
 
-        if isinstance(method, str):
-            m_name = method
-        elif hasattr(method, "__name__"):
-            m_name = method.__name__.split(".")[-1]
-        else:
-            m_name = str(method)
-
-        if m_name in ("base_method", "base"):
+        if method_name == "base_method":
             return base_weighted_pearson_loss, None, None, False
-        elif m_name in ("cosine_scheduler_method", "cosine"):
+        elif method_name == "cosine_scheduler_method":
             return base_weighted_pearson_loss, "cosine", None, False
-        elif m_name in ("focal_wp_method", "focal"):
+        elif method_name == "focal_wp_method":
             gamma = exp.get("focal_gamma", getattr(cfg, "focal_gamma", 2.0))
             loss = lambda p, y: focal_weighted_pearson_loss(p, y, gamma=gamma)
             return loss, "cosine", None, False
-        elif m_name in ("mse_anchor", "mse_anchor_loss"):
+        elif method_name == "mse_anchor":
             lambda_init = exp.get("lambda_anchor", getattr(cfg, "lambda_anchor", 0.05))
             hook = lambda s, tot, c: {"lambda_anchor": 0.5 * lambda_init * (1.0 + math.cos(math.pi * min(1.0, s / tot)))}
             return mse_anchor_loss, "cosine", hook, False
-        elif m_name in ("swa_method", "swa"):
+        elif method_name == "swa_method":
             return base_weighted_pearson_loss, None, None, True
-        elif m_name in ("local_global_loss_7_3", "local_global"):
+        elif method_name == "local_global_loss_7_3":
             return local_global_weighted_pearson_loss, None, None, False
-        elif m_name in ("dynamic_trimmed_method", "dynamic_trimmed"):
+        elif method_name == "dynamic_trimmed_method":
             return (lambda p, y: dynamic_trimmed_loss(p, y, keep_ratio=0.70, soft_weight=0.05)), "cosine", None, False
-        elif m_name in ("asym_wp_loss", "asym_wp"):
+        elif method_name == "asym_wp_loss":
             return asym_corr_penalty_loss, None, None, False
 
         return base_weighted_pearson_loss, None, None, False
