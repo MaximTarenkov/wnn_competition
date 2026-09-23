@@ -19,15 +19,6 @@ from methods.losses import (
     local_global_weighted_pearson_loss,
 )
 
-import methods.base_method as base_method
-import methods.cosine_scheduler_method as cosine_scheduler_method
-import methods.focal_wp_method as focal_wp_method
-import methods.mse_anchor as mse_anchor
-import methods.swa_method as swa_method
-import methods.local_global_loss_7_3 as local_global_loss_7_3
-import methods.dynamic_trimmed_method as dynamic_trimmed_method
-import methods.asym_wp_loss as asym_wp_loss
-
 
 class UVDashedBarColumn(ProgressColumn):
     def __init__(self, bar_width: int = 24):
@@ -143,25 +134,32 @@ class SlotRuntime:
         method = self.method_module
         exp = self.exp_dict
 
-        if method == base_method:
+        if isinstance(method, str):
+            m_name = method
+        elif hasattr(method, "__name__"):
+            m_name = method.__name__.split(".")[-1]
+        else:
+            m_name = str(method)
+
+        if m_name in ("base_method", "base"):
             return base_weighted_pearson_loss, None, None, False
-        elif method == cosine_scheduler_method:
+        elif m_name in ("cosine_scheduler_method", "cosine"):
             return base_weighted_pearson_loss, "cosine", None, False
-        elif method == focal_wp_method:
+        elif m_name in ("focal_wp_method", "focal"):
             gamma = exp.get("focal_gamma", getattr(cfg, "focal_gamma", 2.0))
             loss = lambda p, y: focal_weighted_pearson_loss(p, y, gamma=gamma)
             return loss, "cosine", None, False
-        elif method == mse_anchor:
+        elif m_name in ("mse_anchor", "mse_anchor_loss"):
             lambda_init = exp.get("lambda_anchor", getattr(cfg, "lambda_anchor", 0.05))
             hook = lambda s, tot, c: {"lambda_anchor": 0.5 * lambda_init * (1.0 + math.cos(math.pi * min(1.0, s / tot)))}
             return mse_anchor_loss, "cosine", hook, False
-        elif method == swa_method:
+        elif m_name in ("swa_method", "swa"):
             return base_weighted_pearson_loss, None, None, True
-        elif method == local_global_loss_7_3:
+        elif m_name in ("local_global_loss_7_3", "local_global"):
             return local_global_weighted_pearson_loss, None, None, False
-        elif method == dynamic_trimmed_method:
+        elif m_name in ("dynamic_trimmed_method", "dynamic_trimmed"):
             return (lambda p, y: dynamic_trimmed_loss(p, y, keep_ratio=0.70, soft_weight=0.05)), "cosine", None, False
-        elif method == asym_wp_loss:
+        elif m_name in ("asym_wp_loss", "asym_wp"):
             return asym_corr_penalty_loss, None, None, False
 
         return base_weighted_pearson_loss, None, None, False
@@ -371,3 +369,6 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
             json.dump(summary_data, f, indent=4)
 
     return final_scores if len(exp_list) > 1 else final_scores[slots[0].name]
+
+
+generic_train_seed = train_seed
