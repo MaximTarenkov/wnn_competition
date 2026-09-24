@@ -41,8 +41,8 @@ class GRUInputEncodersMicroDelta(nn.Module):
 
     def _compute_micro_features(self, p_b0, v_b0, p_a0, v_a0, p_b1, v_b1, p_a1, v_a1, eps=1e-6):
         def _extract_asset_micro(p_b, v_b, p_a, v_a):
-            v_b_pos = F.softplus(v_b)
-            v_a_pos = F.softplus(v_a)
+            v_b_pos = v_b.abs() + eps
+            v_a_pos = v_a.abs() + eps
 
             best_bid_p, b_idx = p_b.max(dim=-1, keepdim=True)
             best_ask_p, a_idx = p_a.min(dim=-1, keepdim=True)
@@ -54,10 +54,10 @@ class GRUInputEncodersMicroDelta(nn.Module):
             imb_l1 = (best_bid_v - best_ask_v) / sum_v_l1
             spread_l1 = best_ask_p - best_bid_p
 
-            cross_pv_all = p_b * v_a_pos + p_a * v_b_pos
-            sum_v_all = v_b_pos + v_a_pos
-            wap_all = cross_pv_all.sum(dim=-1, keepdim=True) / (sum_v_all.sum(dim=-1, keepdim=True) + eps)
-            imb_all = (v_b_pos.sum(dim=-1, keepdim=True) - v_a_pos.sum(dim=-1, keepdim=True)) / (sum_v_all.sum(dim=-1, keepdim=True) + eps)
+            total_cash = (p_b * v_b_pos).sum(dim=-1, keepdim=True) + (p_a * v_a_pos).sum(dim=-1, keepdim=True)
+            total_vol = v_b_pos.sum(dim=-1, keepdim=True) + v_a_pos.sum(dim=-1, keepdim=True) + eps
+            wap_all = total_cash / total_vol
+            imb_all = (v_b_pos.sum(dim=-1, keepdim=True) - v_a_pos.sum(dim=-1, keepdim=True)) / total_vol
             wap_diff = wap_all - wap_l1
 
             return wap_l1, wap_all, wap_diff, spread_l1, imb_l1, imb_all
