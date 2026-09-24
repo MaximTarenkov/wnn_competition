@@ -77,10 +77,21 @@ def main():
     cfg = Config()
 
     active_experiments = [
-        base_gru_5b(),
-        exp_gru_input_encoders_micro_delta(),         
-        exp_gru_dualstream_l1_delta(),   
         exp_gru_dualstream_micro_delta(),
+        exp_gru_input_encoders_micro_delta_skip(),
+        exp_gru_input_encoders_micro_delta_two_heads(),
+        exp_gru_input_encoders_micro_delta_sigm(),
+        exp_gru_input_encoders_micro_delta_resgru(),
+        exp_gru_input_encoders_micro_delta(),
+        exp_gru_input_encoders_micro_delta_highway(),
+        exp_gru_dualstream_l1_delta(),
+        exp_gru_input_encoders_l1_delta_6tan(),
+        exp_gru_sum_diff(),
+        exp_base_gru_asym_tanh(),
+        exp_gru_gated_input(),
+        exp_gru_gated_output(),
+        exp_gru_chrono_init(),
+        exp_vgru_chunked(),
     ]
 
     run_experiment(active_experiments, cfg)
