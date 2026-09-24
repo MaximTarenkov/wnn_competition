@@ -8,7 +8,6 @@ from rich.console import Console
 from rich.progress import Progress, ProgressColumn, SpinnerColumn, TextColumn
 from rich.text import Text
 from torch.optim.swa_utils import AveragedModel
-
 from experiment_logger import ExperimentLogger
 from methods.losses import (
     asym_corr_penalty_loss,
@@ -22,7 +21,6 @@ from methods.validator import evaluate
 
 
 def format_time(seconds: float) -> str:
-    """Форматирует секунды в человекочитаемый вид MM:SS или HH:MM:SS."""
     if seconds < 0 or math.isinf(seconds) or math.isnan(seconds):
         return "--:--"
     m, s = divmod(int(seconds), 60)
@@ -33,7 +31,6 @@ def format_time(seconds: float) -> str:
 
 
 def format_val_history(history, best_wp, last_res=None, is_active=True, max_items=4):
-    """Формирует одну компактную строку с динамикой/хронологией метрик."""
     if not history:
         return Text("Waiting for first evaluation...", style="dim italic")
 
@@ -144,7 +141,6 @@ class UVMetricsColumn(ProgressColumn):
         lr = task.fields.get("lr", 0.0)
 
         best_str = f"{best_wp:+.4f}" if best_wp != -float("inf") else " N/A  "
-        # Убраны B:XX и Pat: XX/XX
         return Text(
             f"Loss: {loss:+.4f} | Best WP: {best_str} | LR: {lr:.1e}",
             style="white",
@@ -167,14 +163,19 @@ class SlotRuntime:
         self.target_batch_size = exp_dict.get("batch_size", fallback_batch)
         self.accum_steps = exp_dict.get("accum_steps", getattr(slot_cfg, "accum_steps", 1))
 
-        chunks_per_seq = 20_000 // getattr(slot_cfg, "chunk_size", 2000)
-        self.num_chunks = self.target_batch_size * chunks_per_seq
-
-        self.model = self.model_module.create_model(slot_cfg).to(device)
+        self.raw_model = self.model_module.create_model(slot_cfg).to(device)
+        self.model = torch.compile(self.raw_model)
 
         self.lr = exp_dict.get("lr", slot_cfg.lr)
         self.weight_decay = exp_dict.get("weight_decay", slot_cfg.weight_decay)
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+
+        use_fused = (device.type == "cuda")
+        self.optimizer = torch.optim.AdamW(
+            self.raw_model.parameters(),
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            fused=use_fused
+        )
 
         self.loss_fn, self.scheduler_type, self.loss_step_hook, self.use_swa = self._resolve_method(slot_cfg)
 
@@ -184,12 +185,11 @@ class SlotRuntime:
                 self.optimizer, T_max=total_steps, eta_min=getattr(slot_cfg, "min_lr", 1e-6)
             )
 
-        self.swa_model = AveragedModel(self.model) if self.use_swa else None
+        self.swa_model = AveragedModel(self.raw_model) if self.use_swa else None
         self.swa_start_epoch = exp_dict.get("swa_start_epoch", 2)
         self.patience_limit = exp_dict.get("patience_limit", 100)
 
         self.best_sub_wp = -float("inf")
-        self.best_swa_sub_wp = -float("inf")
         self.patience = 0
         self.is_active = True
 
@@ -298,6 +298,7 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
             for s in slots:
                 if s.is_active:
                     s.model.train()
+                    s.raw_model.train()
 
             for step_in_epoch, (x, y) in enumerate(train_loader, 1):
                 global_step += 1
@@ -308,21 +309,27 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                 if not active_slots:
                     break
 
-                for s in active_slots:
-                    extra_kwargs = {}
-                    if s.loss_step_hook is not None:
-                        extra_kwargs = s.loss_step_hook(global_step, total_steps, cfg)
+                losses_to_step = []
+                total_loss = 0.0
 
-                    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                    for s in active_slots:
+                        extra_kwargs = {}
+                        if s.loss_step_hook is not None:
+                            extra_kwargs = s.loss_step_hook(global_step, total_steps, cfg)
+
                         out = s.model(x)
                         preds = out[0] if isinstance(out, tuple) else out
                         loss = s.loss_fn(preds, y, **extra_kwargs)
                         scaled_loss = loss / s.accum_steps
+                        total_loss = total_loss + scaled_loss
+                        losses_to_step.append((s, loss.detach()))
 
-                    scaled_loss.backward()
+                total_loss.backward()
 
+                for s, l_detached in losses_to_step:
                     if global_step % s.accum_steps == 0:
-                        torch.nn.utils.clip_grad_norm_(s.model.parameters(), max_norm=1.0)
+                        torch.nn.utils.clip_grad_norm_(s.raw_model.parameters(), max_norm=1.0)
                         s.optimizer.step()
                         s.optimizer.zero_grad(set_to_none=True)
 
@@ -330,9 +337,9 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                             s.scheduler.step()
 
                         if s.use_swa and epoch >= s.swa_start_epoch:
-                            s.swa_model.update_parameters(s.model)
+                            s.swa_model.update_parameters(s.raw_model)
 
-                    step_loss = loss.item()
+                    step_loss = l_detached.item()
                     s.step_loss_acc += step_loss
                     s.step_wp_acc += (-step_loss)
                     s.step_count += 1
@@ -353,7 +360,6 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                         active=s.is_active,
                     )
 
-                # Расчет скорости и оставшегося времени (ETA)
                 elapsed = time.time() - start_time
                 if elapsed > 0.0:
                     speed = global_step / elapsed
@@ -370,7 +376,7 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                 )
 
                 if step_in_epoch in val_steps_in_epoch:
-                    models_to_eval = {s.name: s.model for s in slots if s.is_active}
+                    models_to_eval = {s.name: s.raw_model for s in slots if s.is_active}
                     if models_to_eval:
                         sub_results = evaluate(models_to_eval, cfg, device, sample_stride=10)
 
@@ -386,7 +392,7 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                             if sub_wp > s.best_sub_wp:
                                 s.best_sub_wp = sub_wp
                                 s.patience = 0
-                                torch.save(s.model.state_dict(), ckpt_path)
+                                torch.save(s.raw_model.state_dict(), ckpt_path)
                                 is_best = True
                             else:
                                 s.patience += 1
@@ -425,6 +431,7 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                     for s in slots:
                         if s.is_active:
                             s.model.train()
+                            s.raw_model.train()
 
             if not any(s.is_active for s in slots):
                 break
@@ -435,8 +442,8 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
         logger = loggers[s.name]
         ckpt_path = os.path.join(logger.run_dir, "best_sub_model.pt")
         if os.path.exists(ckpt_path):
-            s.model.load_state_dict(torch.load(ckpt_path, map_location=device))
-        best_models[s.name] = s.model
+            s.raw_model.load_state_dict(torch.load(ckpt_path, map_location=device))
+        best_models[s.name] = s.raw_model
 
     final_results = evaluate(best_models, cfg, device, sample_stride=1)
 
