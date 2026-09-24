@@ -8,9 +8,6 @@ class HighwayBlock(nn.Module):
         super().__init__()
         self.fc = nn.Linear(dim, dim)
         self.gate = nn.Linear(dim, dim)
-        
-        # Инициализируем bias гейта отрицательным значением, чтобы на старте 
-        # сеть пропускала градиенты напрямую без искажений (режим identity)
         nn.init.constant_(self.gate.bias, -1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -31,89 +28,77 @@ class HighwayHead(nn.Module):
         return self.out_proj(x)
 
 
-class GRUWithDisentangledMicroHighway(nn.Module):
+class GRUInputEncodersMicroDeltaHighway(nn.Module):
     def __init__(
         self, input_dim=112, hidden_dim=128, num_layers=2, output_dim=2
     ):
         super().__init__()
 
-        # 4 x LOB-энкодеры (22 -> 32)
         self.enc_p0_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_v0_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_p1_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_v1_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
 
-        # 4 x Extra-энкодеры (4 -> 8)
         self.enc_p0_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_v0_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_p1_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_v1_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
 
-        # 1 x Aux-энкодер (8 -> 16)
         self.enc_aux = nn.Sequential(nn.Linear(8, 16), nn.SiLU())
 
-        # 1 x Базовый L1-энкодер (5 -> 16)
-        self.enc_l1 = nn.Sequential(nn.Linear(5, 16), nn.SiLU())
-
-        # 1 x Микроструктурный энкодер с LayerNorm (16 -> 32)
         self.enc_micro = nn.Sequential(
             nn.LayerNorm(16),
             nn.Linear(16, 32),
             nn.SiLU()
         )
 
-        # 32*4 (LOB) + 8*4 (Extra) + 16 (Aux) + 16 (L1) + 32 (Micro) = 224
+        self.delta_proj = nn.Linear(input_dim, 32, bias=False)
+        nn.init.normal_(self.delta_proj.weight, mean=0.0, std=0.01)
+
         self.gru = nn.GRU(
-            input_size=224,
+            input_size=240,
             hidden_size=hidden_dim,
             num_layers=num_layers,
             batch_first=True,
         )
 
-        # Highway Head вместо простого линейного слоя
         self.head = HighwayHead(hidden_dim, output_dim, num_layers=2)
 
-    def _extract_l1_2d(self, p_b, v_b, p_a, v_a):
-        best_bid_p = p_b[:, 0:1]
-        best_ask_p = p_a[:, 0:1]
-        best_bid_v = v_b[:, 0:1]
-        best_ask_v = v_a[:, 0:1]
-
-        spread = best_ask_p - best_bid_p
-        mid = 0.5 * (best_bid_p + best_ask_p)
-        vol_imbalance = best_bid_v - best_ask_v
-
-        return spread, vol_imbalance, mid
-
     def _compute_micro_features(self, p_b0, v_b0, p_a0, v_a0, p_b1, v_b1, p_a1, v_a1, eps=1e-6):
-        def _asset_stats(p_b, v_b, p_a, v_a):
+        def _extract_asset_micro(p_b, v_b, p_a, v_a):
             v_b_pos = F.softplus(v_b)
             v_a_pos = F.softplus(v_a)
 
-            cross_pv = p_b * v_a_pos + p_a * v_b_pos
-            sum_v = v_b_pos + v_a_pos
+            best_bid_p, b_idx = p_b.max(dim=-1, keepdim=True)
+            best_ask_p, a_idx = p_a.min(dim=-1, keepdim=True)
+            best_bid_v = torch.gather(v_b_pos, dim=-1, index=b_idx)
+            best_ask_v = torch.gather(v_a_pos, dim=-1, index=a_idx)
 
-            wap1 = cross_pv[:, :1].sum(dim=-1, keepdim=True) / (sum_v[:, :1].sum(dim=-1, keepdim=True) + eps)
-            wap2 = cross_pv[:, :2].sum(dim=-1, keepdim=True) / (sum_v[:, :2].sum(dim=-1, keepdim=True) + eps)
-            wap3 = cross_pv[:, :3].sum(dim=-1, keepdim=True) / (sum_v[:, :3].sum(dim=-1, keepdim=True) + eps)
-            wap5 = cross_pv[:, :5].sum(dim=-1, keepdim=True) / (sum_v[:, :5].sum(dim=-1, keepdim=True) + eps)
-            wap_diff = wap5 - wap1
+            sum_v_l1 = best_bid_v + best_ask_v + eps
+            wap_l1 = (best_bid_p * best_ask_v + best_ask_p * best_bid_v) / sum_v_l1
+            imb_l1 = (best_bid_v - best_ask_v) / sum_v_l1
+            spread_l1 = best_ask_p - best_bid_p
 
-            imb5 = v_b_pos[:, :5].sum(dim=-1, keepdim=True) / (sum_v[:, :5].sum(dim=-1, keepdim=True) + eps)
-            imball = v_b_pos.sum(dim=-1, keepdim=True) / (sum_v.sum(dim=-1, keepdim=True) + eps)
+            cross_pv_all = p_b * v_a_pos + p_a * v_b_pos
+            sum_v_all = v_b_pos + v_a_pos
+            wap_all = cross_pv_all.sum(dim=-1, keepdim=True) / (sum_v_all.sum(dim=-1, keepdim=True) + eps)
+            imb_all = (v_b_pos.sum(dim=-1, keepdim=True) - v_a_pos.sum(dim=-1, keepdim=True)) / (sum_v_all.sum(dim=-1, keepdim=True) + eps)
+            wap_diff = wap_all - wap_l1
 
-            return wap1, wap2, wap3, wap5, wap_diff, imb5, imball
+            return wap_l1, wap_all, wap_diff, spread_l1, imb_l1, imb_all
 
-        w1_0, w2_0, w3_0, w5_0, wdiff_0, imb5_0, imball_0 = _asset_stats(p_b0, v_b0, p_a0, v_a0)
-        w1_1, w2_1, w3_1, w5_1, wdiff_1, imb5_1, imball_1 = _asset_stats(p_b1, v_b1, p_a1, v_a1)
+        w_l1_0, w_all_0, w_diff_0, sp_0, imb_l1_0, imb_all_0 = _extract_asset_micro(p_b0, v_b0, p_a0, v_a0)
+        w_l1_1, w_all_1, w_diff_1, sp_1, imb_l1_1, imb_all_1 = _extract_asset_micro(p_b1, v_b1, p_a1, v_a1)
 
-        basis_1 = w1_0 - w1_1
-        basis_5 = w5_0 - w5_1
+        basis_l1 = w_l1_0 - w_l1_1
+        basis_all = w_all_0 - w_all_1
+        basis_imb_l1 = imb_l1_0 - imb_l1_1
+        basis_imb_all = imb_all_0 - imb_all_1
 
         return torch.cat([
-            w1_0, w2_0, w3_0, w5_0, wdiff_0, imb5_0, imball_0,
-            w1_1, w2_1, w3_1, w5_1, wdiff_1, imb5_1, imball_1,
-            basis_1, basis_5
+            w_l1_0, w_all_0, w_diff_0, sp_0, imb_l1_0, imb_all_0,
+            w_l1_1, w_all_1, w_diff_1, sp_1, imb_l1_1, imb_all_1,
+            basis_l1, basis_all, basis_imb_l1, basis_imb_all
         ], dim=-1)
 
     def forward(self, x, h=None):
@@ -122,11 +107,9 @@ class GRUWithDisentangledMicroHighway(nn.Module):
 
         p_b0, p_a0 = x_flat[:, 0:11], x_flat[:, 11:22]
         v_b0, v_a0 = x_flat[:, 22:33], x_flat[:, 33:44]
-
         p_b1, p_a1 = x_flat[:, 52:63], x_flat[:, 63:74]
         v_b1, v_a1 = x_flat[:, 74:85], x_flat[:, 85:96]
 
-        # 1. Изолированные энкодеры
         e_p0_lob = self.enc_p0_lob(x_flat[:, 0:22])
         e_v0_lob = self.enc_v0_lob(x_flat[:, 22:44])
         e_p0_ext = self.enc_p0_ext(x_flat[:, 44:48])
@@ -139,33 +122,30 @@ class GRUWithDisentangledMicroHighway(nn.Module):
 
         e_aux = self.enc_aux(x_flat[:, 104:112])
 
-        # 2. L1 срез
-        s0, imb0, mid0 = self._extract_l1_2d(p_b0, v_b0, p_a0, v_a0)
-        s1, imb1, mid1 = self._extract_l1_2d(p_b1, v_b1, p_a1, v_a1)
-        mid_diff = mid0 - mid1
-        e_l1 = self.enc_l1(torch.cat([s0, imb0, s1, imb1, mid_diff], dim=-1))
-
-        # 3. Микроструктурный срез
         micro_raw = self._compute_micro_features(p_b0, v_b0, p_a0, v_a0, p_b1, v_b1, p_a1, v_a1)
         e_micro = self.enc_micro(micro_raw)
 
-        # 4. Конкатенация (dim=224)
+        d_proj = self.delta_proj(x_flat).view(B, T, 32)
+        d_diff = torch.cat([
+            torch.zeros_like(d_proj[:, :1, :]),
+            d_proj[:, 1:, :] - d_proj[:, :-1, :]
+        ], dim=1)
+        e_delta = torch.tanh(d_diff).reshape(B * T, 32)
+
         combined = torch.cat([
             e_p0_lob, e_v0_lob, e_p0_ext, e_v0_ext,
             e_p1_lob, e_v1_lob, e_p1_ext, e_v1_ext,
-            e_aux, e_l1, e_micro
-        ], dim=-1).view(B, T, 224).to(x.dtype)
+            e_aux, e_micro, e_delta
+        ], dim=-1).view(B, T, 240).to(x.dtype)
 
         out, h_next = self.gru(combined, h)
-
-        # Выход через Highway Head с ограничением диапазона [-2, 2]
         pred = 2.0 * torch.tanh(self.head(out))
 
         return pred, h_next
 
 
 def create_model(cfg) -> nn.Module:
-    return GRUWithDisentangledMicroHighway(
+    return GRUInputEncodersMicroDeltaHighway(
         input_dim=cfg.input_dim,
         hidden_dim=cfg.hidden_dim,
         num_layers=cfg.num_layers,

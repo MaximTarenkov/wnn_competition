@@ -77,10 +77,10 @@ def main():
     cfg = Config()
 
     active_experiments = [
-        exp_gru_input_encoders(),         
-        exp_gru_input_encoders_micro(),   
-        exp_gru_input_encoders_l1(),
-        exp_gru_input_encoders_l1_delta() 
+        base_gru_5b(),
+        exp_gru_input_encoders_micro_delta(),         
+        exp_gru_dualstream_l1_delta(),   
+        exp_gru_dualstream_micro_delta(),
     ]
 
     run_experiment(active_experiments, cfg)

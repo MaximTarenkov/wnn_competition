@@ -12,7 +12,6 @@ from models import (
     gru_mlp_encoders_disentangled_micro_highway,
     gru_mlp_encoders_disentangled_advanced_feats,
     gru_mlp_encoders_disentangled_two_heads,
-    gru_mlp_encoders_disentangled_l1_dualstream_delta_silu,
     gru_mlp_encoders_disentangled_l1_delta_expanded,
     gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_v2,
     gru_mlp_encoders_disentangled_l1_delta_silu_hotfix_resgru,
@@ -22,6 +21,9 @@ from models import (
     gru_input_encoders_micro,
     gru_input_encoders_l1,
     gru_input_encoders_l1_delta,
+    gru_dualstream_l1_delta,
+    gru_dualstream_micro_delta,
+    gru_input_encoders_micro_delta,
 )
 
 from methods import (
@@ -118,3 +120,36 @@ def exp_gru_input_encoders_l1_delta():
         "batch_size": 5,
     }
 
+def exp_gru_input_encoders_micro_delta():
+    return {
+        "name": "gru_input_encoders_micro_delta",
+        "model": gru_input_encoders_micro_delta,
+        "method": cosine_scheduler_method,
+        "lr": 1e-3,
+        "weight_decay": 1e-4,
+        "hidden_dim": 128,
+        "batch_size": 5,
+    }
+
+
+def exp_gru_dualstream_l1_delta():
+    return {
+        "name": "gru_dualstream_l1_delta",
+        "model": gru_dualstream_l1_delta,
+        "method": cosine_scheduler_method,
+        "lr": 1e-3,
+        "weight_decay": 1e-4,
+        "hidden_dim": 128,
+        "batch_size": 5,
+    }
+
+def exp_gru_dualstream_micro_delta():
+    return {
+        "name": "gru_dualstream_micro_delta",
+        "model": gru_dualstream_micro_delta,
+        "method": cosine_scheduler_method,
+        "lr": 1e-3,
+        "weight_decay": 1e-4,
+        "hidden_dim": 128,
+        "batch_size": 5,
+    }
