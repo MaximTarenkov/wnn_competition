@@ -16,10 +16,10 @@ class Config:
 
     runs_dir: str = "runs"
 
-    seeds: List[int] = field(default_factory=lambda: [18492, 8222, 2304, 28775]) # [1, 2, 3, 4, 5, 6, 67, 7, 8, 9] # , 22252, 3327, 15762, 5575  # 
+    seeds: List[int] = field(default_factory=lambda: [18492, 8222, 2304, 28775, 873, 9412, 60591, 318, 482094, 7215, 19504, 832109, 54, 692410, 3817, 90432, 517839, 2681, 74019, 183652, 947]) # [1, 2, 3, 4, 5, 6, 67, 7, 8, 9] # , 22252, 3327, 15762, 5575  # 
 
-    max_epochs: int = 2
-    lr: float = 1e-4
+    max_epochs: int = 4
+    lr: float = 1e-3
     weight_decay: float = 1e-4
     log_interval: int = 25
     device: str = "cuda"

@@ -10,7 +10,7 @@ from rich.table import Table
 from config import Config
 import dataset
 import methods.trainer as trainer
-import experiments as exp
+from experiments import *
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -39,17 +39,13 @@ def run_experiment(experiments_group, cfg):
     results_by_exp = {name: [] for name in exp_names}
 
     for i, seed in enumerate(cfg.seeds, 1):
-        console.print(f"\n[bold blue]{'=' * 65}[/bold blue]")
         console.print(f"[bold blue][{i}/{len(cfg.seeds)}] Seed: {seed} | Running parallel stream...[/bold blue]")
-        console.print(f"[bold blue]{'=' * 65}[/bold blue]")
         set_seed(seed)
 
-        if "batch_size" in experiments_group[0]:
-            cfg.full_batch_size = experiments_group[0]["batch_size"]
+        cfg.full_batch_size = max(e.get("batch_size", cfg.full_batch_size) for e in experiments_group)
 
         train_loader = dataset.get_train_dataloader(cfg, seed=seed)
 
-        # Standard train_seed call with multi-slot support
         seed_scores = trainer.train_seed(experiments_group, train_loader, cfg, seed=seed)
 
         if isinstance(seed_scores, dict):
@@ -64,7 +60,6 @@ def run_experiment(experiments_group, cfg):
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
-    # Final summary table
     table = Table(title="\nFINAL COMPARISON (MEAN ± STD ACROSS SEEDS)", show_header=True, header_style="bold magenta")
     table.add_column("Experiment Name", style="cyan", width=45)
     table.add_column("Full Val WP (Mean ± Std)", style="bold green", justify="right")
@@ -82,9 +77,10 @@ def main():
     cfg = Config()
 
     active_experiments = [
-        exp.exp_base_gru_lr1e3(),
-        exp.exp_base_gru_lr1e4(),
-        exp.exp_base_gru_lr1e5(),
+        exp_gru_input_encoders(),         
+        exp_gru_input_encoders_micro(),   
+        exp_gru_input_encoders_l1(),
+        exp_gru_input_encoders_l1_delta() 
     ]
 
     run_experiment(active_experiments, cfg)
