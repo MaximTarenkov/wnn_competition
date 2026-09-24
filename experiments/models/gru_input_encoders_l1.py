@@ -2,28 +2,24 @@ import torch
 import torch.nn as nn
 
 
-class GRUWithDisentangledEncoders(nn.Module):
+class GRUInputEncodersL1(nn.Module):
     def __init__(
         self, input_dim=112, hidden_dim=128, num_layers=2, output_dim=2
     ):
         super().__init__()
 
-        # 4 x LOB-энкодеры (22 -> 32)
         self.enc_p0_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_v0_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_p1_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_v1_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
 
-        # 4 x Extra-энкодеры (4 -> 8)
         self.enc_p0_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_v0_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_p1_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_v1_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
 
-        # 1 x Aux-энкодер (8 -> 16)
         self.enc_aux = nn.Sequential(nn.Linear(8, 16), nn.SiLU())
 
-        # 1 x Синтетический L1-энкодер (5 -> 16)
         self.enc_l1 = nn.Sequential(nn.Linear(5, 16), nn.SiLU())
 
         # 32*4 + 8*4 + 16 + 16 = 192
@@ -96,7 +92,7 @@ class GRUWithDisentangledEncoders(nn.Module):
 
 
 def create_model(cfg) -> nn.Module:
-    return GRUWithDisentangledEncoders(
+    return GRUInputEncodersL1(
         input_dim=cfg.input_dim,
         hidden_dim=cfg.hidden_dim,
         num_layers=cfg.num_layers,

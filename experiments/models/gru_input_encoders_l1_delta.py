@@ -3,37 +3,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class GRUDualStreamL1Fix(nn.Module):
+class GRUInputEncodersL1Delta(nn.Module):
     def __init__(
         self, input_dim=112, hidden_dim=128, num_layers=2, output_dim=2
     ):
         super().__init__()
 
-        # 4 x LOB-энкодеры (22 -> 32)
         self.enc_p0_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_v0_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_p1_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
         self.enc_v1_lob = nn.Sequential(nn.Linear(22, 32), nn.SiLU())
 
-        # 4 x Extra-энкодеры (4 -> 8)
         self.enc_p0_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_v0_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_p1_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
         self.enc_v1_ext = nn.Sequential(nn.Linear(4, 8), nn.SiLU())
 
-        # 1 x Aux-энкодер (8 -> 16)
         self.enc_aux = nn.Sequential(nn.Linear(8, 16), nn.SiLU())
 
-        # 1 x Синтетический L1-энкодер (5 -> 16)
         self.enc_l1 = nn.Sequential(nn.Linear(5, 16), nn.SiLU())
 
         self.delta_proj = nn.Linear(input_dim, 32, bias=False)
         
-        # Мягкая инициализация: на 1-й эпохе дельта не ломает базовый сигнал L1,
-        # а аккуратно добавляет альфу по мере сходимости
         nn.init.normal_(self.delta_proj.weight, mean=0.0, std=0.01)
 
-        # 192 (базовый l1_fix) + 32 (симметричная дельта) = 224
         self.gru = nn.GRU(
             input_size=224,
             hidden_size=hidden_dim,
@@ -60,7 +53,6 @@ class GRUDualStreamL1Fix(nn.Module):
         B, T, D = x.shape
         x_flat = x.reshape(B * T, D)
 
-        # 1. Точно такой же прогон стакана, как в l1_fix
         e_p0_lob = self.enc_p0_lob(x_flat[:, 0:22])
         e_v0_lob = self.enc_v0_lob(x_flat[:, 22:44])
         e_p0_ext = self.enc_p0_ext(x_flat[:, 44:48])
@@ -90,7 +82,6 @@ class GRUDualStreamL1Fix(nn.Module):
         l1_raw = torch.cat([s0, imb0, s1, imb1, mid_diff], dim=-1)
         e_l1 = self.enc_l1(l1_raw)
 
-        # 2. Быстрый и СИММЕТРИЧНЫЙ Delta Stream
         d_proj = self.delta_proj(x_flat).view(B, T, 32)
         d_diff = torch.cat([
             torch.zeros_like(d_proj[:, :1, :]),
@@ -99,7 +90,6 @@ class GRUDualStreamL1Fix(nn.Module):
         
         e_delta = torch.tanh(d_diff).reshape(B * T, 32)
 
-        # 3. Сборка всех эмбеддингов
         combined = torch.cat([
             e_p0_lob, e_v0_lob, e_p0_ext, e_v0_ext,
             e_p1_lob, e_v1_lob, e_p1_ext, e_v1_ext,
@@ -113,7 +103,7 @@ class GRUDualStreamL1Fix(nn.Module):
 
 
 def create_model(cfg) -> nn.Module:
-    return GRUDualStreamL1Fix(
+    return GRUInputEncodersL1Delta(
         input_dim=cfg.input_dim,
         hidden_dim=cfg.hidden_dim,
         num_layers=cfg.num_layers,
