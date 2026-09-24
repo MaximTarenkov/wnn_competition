@@ -1,24 +1,78 @@
-import os
+import copy
 import json
 import math
+import os
+import time
 import torch
-import copy
-from torch.optim.swa_utils import AveragedModel
-
 from rich.console import Console
 from rich.progress import Progress, ProgressColumn, SpinnerColumn, TextColumn
 from rich.text import Text
+from torch.optim.swa_utils import AveragedModel
 
 from experiment_logger import ExperimentLogger
-from methods.validator import evaluate
 from methods.losses import (
-    base_weighted_pearson_loss,
-    focal_weighted_pearson_loss,
-    mse_anchor_loss,
-    dynamic_trimmed_loss,
     asym_corr_penalty_loss,
+    base_weighted_pearson_loss,
+    dynamic_trimmed_loss,
+    focal_weighted_pearson_loss,
     local_global_weighted_pearson_loss,
+    mse_anchor_loss,
 )
+from methods.validator import evaluate
+
+
+def format_time(seconds: float) -> str:
+    """Форматирует секунды в человекочитаемый вид MM:SS или HH:MM:SS."""
+    if seconds < 0 or math.isinf(seconds) or math.isnan(seconds):
+        return "--:--"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def format_val_history(history, best_wp, last_res=None, is_active=True, max_items=4):
+    """Формирует одну компактную строку с динамикой/хронологией метрик."""
+    if not history:
+        return Text("Waiting for first evaluation...", style="dim italic")
+
+    t = Text()
+    visible = history[-max_items:]
+    if len(history) > max_items:
+        t.append("… → ", style="dim")
+
+    for i, item in enumerate(visible):
+        wp = item["wp"]
+        diff = item["diff"]
+        is_best = item["is_best"]
+        wp_str = f"{wp:+.4f}"
+
+        if is_best:
+            t.append(wp_str, style="bold green")
+            t.append("★", style="bold yellow")
+        elif diff > 0:
+            t.append(wp_str, style="green")
+            t.append("↑", style="green")
+        elif diff < 0:
+            t.append(wp_str, style="dim red")
+            t.append("↓", style="dim red")
+        else:
+            t.append(wp_str, style="dim white")
+
+        if i < len(visible) - 1:
+            t.append(" → ", style="dim")
+
+    if last_res:
+        t.append(f" | t0: {last_res['t0']:.3f} t1: {last_res['t1']:.3f}", style="dim")
+
+    best_str = f"{best_wp:+.4f}" if best_wp != -float("inf") else "N/A"
+    t.append(f" | Best: {best_str}", style="bold white")
+
+    if not is_active:
+        t.append(" [STOPPED]", style="bold red")
+
+    return t
 
 
 class UVDashedBarColumn(ProgressColumn):
@@ -27,7 +81,7 @@ class UVDashedBarColumn(ProgressColumn):
         self.bar_width = bar_width
 
     def render(self, task):
-        if task.fields.get("is_header"):
+        if task.fields.get("is_header") or task.fields.get("is_subval"):
             return Text("")
 
         if not task.total:
@@ -55,6 +109,10 @@ class UVNameOrSpinnerColumn(ProgressColumn):
             title = task.fields.get("title", "Training...")
             return Text.assemble(spinner_char, Text(f" {title}", style="bold white"))
 
+        if task.fields.get("is_subval"):
+            sub_title = "  ↳ Sub-Val Dynamics:"
+            return Text(f"{sub_title:<{self.name_width}}", style="dim cyan")
+
         name = task.description
         if len(name) > self.name_width:
             name = name[: self.name_width - 3] + "..."
@@ -63,7 +121,7 @@ class UVNameOrSpinnerColumn(ProgressColumn):
 
 class UVStepCounterColumn(ProgressColumn):
     def render(self, task):
-        if task.fields.get("is_header"):
+        if task.fields.get("is_header") or task.fields.get("is_subval"):
             return Text("")
         total = task.total if task.total else 0
         return Text(f"{int(task.completed):04d}/{int(total):04d}", style="dim white")
@@ -74,6 +132,9 @@ class UVMetricsColumn(ProgressColumn):
         if task.fields.get("is_header"):
             return Text("")
 
+        if task.fields.get("is_subval"):
+            return task.fields.get("val_line", Text("Waiting for first eval...", style="dim italic"))
+
         if not task.fields.get("active", True):
             best_wp = task.fields.get("best_wp", 0.0)
             return Text(f"[STOPPED] Best WP: {best_wp:.4f}", style="dim red")
@@ -81,13 +142,11 @@ class UVMetricsColumn(ProgressColumn):
         loss = task.fields.get("loss", 0.0)
         best_wp = task.fields.get("best_wp", -1.0)
         lr = task.fields.get("lr", 0.0)
-        patience = task.fields.get("patience", 0)
-        p_limit = task.fields.get("p_limit", 100)
-        b_size = task.fields.get("b_size", 0)
 
         best_str = f"{best_wp:+.4f}" if best_wp != -float("inf") else " N/A  "
+        # Убраны B:XX и Pat: XX/XX
         return Text(
-            f"B:{b_size:02d} | Loss: {loss:+.4f} | Best WP: {best_str} | Pat: {patience:02d}/{p_limit:02d} | LR: {lr:.1e}",
+            f"Loss: {loss:+.4f} | Best WP: {best_str} | LR: {lr:.1e}",
             style="white",
         )
 
@@ -134,6 +193,7 @@ class SlotRuntime:
         self.patience = 0
         self.is_active = True
 
+        self.val_history = []
         self.step_loss_acc = 0.0
         self.step_wp_acc = 0.0
         self.step_count = 0
@@ -191,11 +251,12 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
     val_steps_in_epoch.add(num_batches)
 
     global_step = 0
+    start_time = time.time()
     console = Console()
 
     progress = Progress(
         UVNameOrSpinnerColumn(name_width=32),
-        UVDashedBarColumn(bar_width=20),
+        UVDashedBarColumn(bar_width=32),
         TextColumn(" "),
         UVStepCounterColumn(),
         TextColumn(" "),
@@ -211,21 +272,27 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
             title=f"Starting training on Seed {seed_val} | Stream batches: {num_batches} | Steps: {total_steps}",
         )
 
-        tasks = {
-            s.name: progress.add_task(
+        model_tasks = {}
+        val_tasks = {}
+
+        for s in slots:
+            model_tasks[s.name] = progress.add_task(
                 s.name,
                 total=total_steps,
                 is_header=False,
+                is_subval=False,
                 active=True,
                 loss=0.0,
                 best_wp=s.best_sub_wp,
                 lr=s.lr,
-                patience=0,
-                p_limit=s.patience_limit,
-                b_size=s.target_batch_size,
             )
-            for s in slots
-        }
+            val_tasks[s.name] = progress.add_task(
+                f"{s.name}_subval",
+                total=None,
+                is_header=False,
+                is_subval=True,
+                val_line=Text("Waiting for first evaluation...", style="dim italic"),
+            )
 
         for epoch in range(1, cfg.max_epochs + 1):
             for s in slots:
@@ -278,18 +345,28 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                         s.step_loss_acc, s.step_wp_acc, s.step_count = 0.0, 0.0, 0
 
                     progress.update(
-                        tasks[s.name],
+                        model_tasks[s.name],
                         completed=global_step,
                         loss=s.last_avg_loss,
                         best_wp=s.best_sub_wp,
                         lr=s.optimizer.param_groups[0]["lr"],
-                        patience=s.patience,
                         active=s.is_active,
                     )
 
+                # Расчет скорости и оставшегося времени (ETA)
+                elapsed = time.time() - start_time
+                if elapsed > 0.0:
+                    speed = global_step / elapsed
+                    rem_steps = max(0, total_steps - global_step)
+                    eta_sec = rem_steps / speed if speed > 0 else 0
+                    speed_str = f"{speed:.2f} it/s" if speed >= 1.0 else f"{1.0/speed:.2f} s/it"
+                    timing_info = f", ~{format_time(eta_sec)} left, {speed_str}"
+                else:
+                    timing_info = ""
+
                 progress.update(
                     header_task,
-                    title=f"Epoch {epoch:02d}/{cfg.max_epochs:02d} | Step {step_in_epoch:04d}/{num_batches:04d} (Global {global_step:05d})",
+                    title=f"Epoch {epoch:02d}/{cfg.max_epochs:02d} | Step {step_in_epoch:04d}/{num_batches:04d} (Global {global_step:05d}{timing_info})",
                 )
 
                 if step_in_epoch in val_steps_in_epoch:
@@ -303,33 +380,46 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                             logger = loggers[s.name]
                             ckpt_path = os.path.join(logger.run_dir, "best_sub_model.pt")
 
+                            prev_wp = s.val_history[-1]["wp"] if s.val_history else None
+                            diff = (sub_wp - prev_wp) if prev_wp is not None else 0.0
+
                             if sub_wp > s.best_sub_wp:
                                 s.best_sub_wp = sub_wp
                                 s.patience = 0
                                 torch.save(s.model.state_dict(), ckpt_path)
-                                mark = " [bold green][NEW BEST!][/bold green]"
+                                is_best = True
                             else:
                                 s.patience += 1
-                                mark = f" [dim](No change: {s.patience}/{s.patience_limit})[/dim]"
+                                is_best = False
+
+                            s.val_history.append({
+                                "step": global_step,
+                                "wp": sub_wp,
+                                "diff": diff,
+                                "is_best": is_best,
+                            })
 
                             current_lr = s.optimizer.param_groups[0]["lr"]
-                            progress.console.print(
-                                f"  [dim]↳[/dim] [cyan]{s.name:<32}[/cyan] | Ep {epoch:02d} | "
-                                f"WP: [bold white]{sub_wp:.4f}[/bold white] (t0: {res['t0']:.4f}, t1: {res['t1']:.4f}){mark}"
-                            )
                             logger.log_val_event(epoch, global_step, "sub_10pct", current_lr, res, s.patience)
 
                             if s.patience >= s.patience_limit:
-                                progress.console.print(
-                                    f"  [red]↳ Early stopping triggered for {s.name} at step {global_step}.[/red]"
-                                )
                                 s.is_active = False
 
                             progress.update(
-                                tasks[s.name],
+                                model_tasks[s.name],
                                 best_wp=s.best_sub_wp,
-                                patience=s.patience,
                                 active=s.is_active,
+                            )
+
+                            progress.update(
+                                val_tasks[s.name],
+                                val_line=format_val_history(
+                                    s.val_history,
+                                    s.best_sub_wp,
+                                    last_res=res,
+                                    is_active=s.is_active,
+                                    max_items=4,
+                                ),
                             )
 
                     for s in slots:
