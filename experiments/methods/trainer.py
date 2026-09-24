@@ -22,7 +22,6 @@ from methods.validator import evaluate
 
 
 def format_time(seconds: float) -> str:
-    """Форматирует секунды в человекочитаемый вид MM:SS или HH:MM:SS."""
     if seconds < 0 or math.isinf(seconds) or math.isnan(seconds):
         return "--:--"
     m, s = divmod(int(seconds), 60)
@@ -33,7 +32,6 @@ def format_time(seconds: float) -> str:
 
 
 def format_val_history(history, best_wp, last_res=None, is_active=True, max_items=4):
-    """Формирует одну компактную строку с динамикой/хронологией метрик."""
     if not history:
         return Text("Waiting for first evaluation...", style="dim italic")
 
@@ -144,7 +142,6 @@ class UVMetricsColumn(ProgressColumn):
         lr = task.fields.get("lr", 0.0)
 
         best_str = f"{best_wp:+.4f}" if best_wp != -float("inf") else " N/A  "
-        # Убраны B:XX и Pat: XX/XX
         return Text(
             f"Loss: {loss:+.4f} | Best WP: {best_str} | LR: {lr:.1e}",
             style="white",
@@ -170,7 +167,9 @@ class SlotRuntime:
         chunks_per_seq = 20_000 // getattr(slot_cfg, "chunk_size", 2000)
         self.num_chunks = self.target_batch_size * chunks_per_seq
 
-        self.model = self.model_module.create_model(slot_cfg).to(device)
+        raw_model = self.model_module.create_model(slot_cfg).to(device)
+        self.model = torch.compile(raw_model)
+        self.stream = torch.cuda.Stream()
 
         self.lr = exp_dict.get("lr", slot_cfg.lr)
         self.weight_decay = exp_dict.get("weight_decay", slot_cfg.weight_decay)
@@ -198,6 +197,7 @@ class SlotRuntime:
         self.step_wp_acc = 0.0
         self.step_count = 0
         self.last_avg_loss = 0.0
+        self.last_loss_val = 0.0
 
     def _resolve_method(self, cfg):
         method = self.method_module
@@ -308,34 +308,42 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                 if not active_slots:
                     break
 
+                losses = []
                 for s in active_slots:
-                    extra_kwargs = {}
-                    if s.loss_step_hook is not None:
-                        extra_kwargs = s.loss_step_hook(global_step, total_steps, cfg)
+                    with torch.cuda.stream(s.stream):
+                        extra_kwargs = {}
+                        if s.loss_step_hook is not None:
+                            extra_kwargs = s.loss_step_hook(global_step, total_steps, cfg)
 
-                    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                        out = s.model(x)
-                        preds = out[0] if isinstance(out, tuple) else out
-                        loss = s.loss_fn(preds, y, **extra_kwargs)
-                        scaled_loss = loss / s.accum_steps
+                        with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                            out = s.model(x)
+                            preds = out[0] if isinstance(out, tuple) else out
+                            loss = s.loss_fn(preds, y, **extra_kwargs)
+                            scaled_loss = loss / s.accum_steps
 
-                    scaled_loss.backward()
+                        scaled_loss.backward()
 
-                    if global_step % s.accum_steps == 0:
-                        torch.nn.utils.clip_grad_norm_(s.model.parameters(), max_norm=1.0)
-                        s.optimizer.step()
-                        s.optimizer.zero_grad(set_to_none=True)
+                        if global_step % s.accum_steps == 0:
+                            torch.nn.utils.clip_grad_norm_(s.model.parameters(), max_norm=1.0)
+                            s.optimizer.step()
+                            s.optimizer.zero_grad(set_to_none=True)
 
-                        if s.scheduler is not None:
-                            s.scheduler.step()
+                            if s.scheduler is not None:
+                                s.scheduler.step()
 
-                        if s.use_swa and epoch >= s.swa_start_epoch:
-                            s.swa_model.update_parameters(s.model)
+                            if s.use_swa and epoch >= s.swa_start_epoch:
+                                s.swa_model.update_parameters(s.model)
 
+                        losses.append((s, loss))
+
+                torch.cuda.synchronize()
+
+                for s, loss in losses:
                     step_loss = loss.item()
                     s.step_loss_acc += step_loss
                     s.step_wp_acc += (-step_loss)
                     s.step_count += 1
+                    s.last_loss_val = step_loss
 
                     if global_step % cfg.log_interval == 0:
                         s.last_avg_loss = s.step_loss_acc / s.step_count
@@ -344,30 +352,32 @@ def train_seed(experiments, train_loader, cfg, exp_name=None, seed=None):
                         loggers[s.name].log_train_step(epoch, global_step, current_lr, s.last_avg_loss, avg_train_wp)
                         s.step_loss_acc, s.step_wp_acc, s.step_count = 0.0, 0.0, 0
 
+                if global_step % cfg.log_interval == 0:
+                    for s in active_slots:
+                        progress.update(
+                            model_tasks[s.name],
+                            completed=global_step,
+                            loss=s.last_avg_loss if s.last_avg_loss != 0.0 else s.last_loss_val,
+                            best_wp=s.best_sub_wp,
+                            lr=s.optimizer.param_groups[0]["lr"],
+                            active=s.is_active,
+                        )
+
+                if global_step % 5 == 0:
+                    elapsed = time.time() - start_time
+                    if elapsed > 0.0:
+                        speed = global_step / elapsed
+                        rem_steps = max(0, total_steps - global_step)
+                        eta_sec = rem_steps / speed if speed > 0 else 0
+                        speed_str = f"{speed:.2f} it/s" if speed >= 1.0 else f"{1.0/speed:.2f} s/it"
+                        timing_info = f", ~{format_time(eta_sec)} left, {speed_str}"
+                    else:
+                        timing_info = ""
+
                     progress.update(
-                        model_tasks[s.name],
-                        completed=global_step,
-                        loss=s.last_avg_loss,
-                        best_wp=s.best_sub_wp,
-                        lr=s.optimizer.param_groups[0]["lr"],
-                        active=s.is_active,
+                        header_task,
+                        title=f"Epoch {epoch:02d}/{cfg.max_epochs:02d} | Step {step_in_epoch:04d}/{num_batches:04d} (Global {global_step:05d}{timing_info})",
                     )
-
-                # Расчет скорости и оставшегося времени (ETA)
-                elapsed = time.time() - start_time
-                if elapsed > 0.0:
-                    speed = global_step / elapsed
-                    rem_steps = max(0, total_steps - global_step)
-                    eta_sec = rem_steps / speed if speed > 0 else 0
-                    speed_str = f"{speed:.2f} it/s" if speed >= 1.0 else f"{1.0/speed:.2f} s/it"
-                    timing_info = f", ~{format_time(eta_sec)} left, {speed_str}"
-                else:
-                    timing_info = ""
-
-                progress.update(
-                    header_task,
-                    title=f"Epoch {epoch:02d}/{cfg.max_epochs:02d} | Step {step_in_epoch:04d}/{num_batches:04d} (Global {global_step:05d}{timing_info})",
-                )
 
                 if step_in_epoch in val_steps_in_epoch:
                     models_to_eval = {s.name: s.model for s in slots if s.is_active}

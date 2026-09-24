@@ -11,33 +11,35 @@ VALID_PARQUET_PATH = "../datasets/valid.parquet"
 class ParquetValDataset(Dataset):
     def __init__(self, parquet_path, sample_stride=1):
         self.parquet_path = parquet_path
-        self.parquet = pq.ParquetFile(parquet_path)
-        self.num_row_groups = self.parquet.num_row_groups
-        self.indices = list(range(0, self.num_row_groups, sample_stride))
         self.columns = list(FEATURE_COLUMNS) + list(TARGET_COLUMNS) + ["need_prediction", "is_scored"]
         self.n_feat = len(FEATURE_COLUMNS)
         self.n_targ = len(TARGET_COLUMNS)
+
+        self.parquet = pq.ParquetFile(parquet_path)
+        self.num_row_groups = self.parquet.num_row_groups
+        self.indices = list(range(0, self.num_row_groups, sample_stride))
+
+        table = self.parquet.read(columns=self.columns, use_threads=True)
+
+        all_feat = np.column_stack([table[c].to_numpy(zero_copy_only=False) for c in FEATURE_COLUMNS]).astype(np.float32)
+        all_targ = np.column_stack([table[c].to_numpy(zero_copy_only=False) for c in TARGET_COLUMNS]).astype(np.float32)
+        all_need = table["need_prediction"].to_numpy(zero_copy_only=False).astype(bool)
+        all_scored = table["is_scored"].to_numpy(zero_copy_only=False).astype(bool)
+
+        feat_tensor = torch.from_numpy(all_feat).view(self.num_row_groups, SEQUENCE_LENGTH, self.n_feat)
+        targ_tensor = torch.from_numpy(all_targ).view(self.num_row_groups, SEQUENCE_LENGTH, self.n_targ)
+        need_tensor = torch.from_numpy(all_need).view(self.num_row_groups, SEQUENCE_LENGTH)
+        scored_tensor = torch.from_numpy(all_scored).view(self.num_row_groups, SEQUENCE_LENGTH)
+
+        self.features = feat_tensor[self.indices]
+        self.targets = targ_tensor[self.indices]
+        self.masks = need_tensor[self.indices] & scored_tensor[self.indices]
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        rg_idx = self.indices[idx]
-        table = self.parquet.read_row_group(rg_idx, columns=self.columns, use_threads=False)
-
-        feat = np.empty((SEQUENCE_LENGTH, self.n_feat), dtype=np.float32)
-        for i, c in enumerate(FEATURE_COLUMNS):
-            feat[:, i] = table[c].to_numpy(zero_copy_only=False)
-
-        targ = np.empty((SEQUENCE_LENGTH, self.n_targ), dtype=np.float32)
-        for i, c in enumerate(TARGET_COLUMNS):
-            targ[:, i] = table[c].to_numpy(zero_copy_only=False)
-
-        need = table["need_prediction"].to_numpy(zero_copy_only=False).astype(bool)
-        scored = table["is_scored"].to_numpy(zero_copy_only=False).astype(bool)
-        mask = need & scored
-
-        return torch.from_numpy(feat), torch.from_numpy(targ), torch.from_numpy(mask)
+        return self.features[idx], self.targets[idx], self.masks[idx]
 
 
 @torch.inference_mode()
@@ -61,15 +63,12 @@ def evaluate(models, cfg, device, sample_stride=1, batch_size=4, num_workers=2):
     valid_path = getattr(cfg, "valid_path", VALID_PARQUET_PATH)
     val_dataset = ParquetValDataset(valid_path, sample_stride=sample_stride)
 
-    effective_workers = num_workers if len(val_dataset) > batch_size else 0
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=effective_workers,
+        num_workers=0,
         pin_memory=use_cuda,
-        prefetch_factor=2 if effective_workers > 0 else None,
-        persistent_workers=False,
     )
 
     accumulators = {name: GlobalAccumulator() for name in models_dict.keys()}

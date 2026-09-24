@@ -1,5 +1,7 @@
 import os
 import random
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import torch
 import gc
@@ -12,10 +14,6 @@ import dataset
 import methods.trainer as trainer
 from experiments import *
 
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-torch.backends.cudnn.benchmark = True
-
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -24,41 +22,64 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
-def run_experiment(experiments_group, cfg):
-    console = Console()
+def run_single_experiment_task(exp_fn, cfg):
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
 
-    if isinstance(experiments_group, dict):
-        experiments_group = [experiments_group]
+    exp_dict = exp_fn()
+    exp_name = exp_dict["name"]
+    results = []
 
-    exp_names = [e["name"] for e in experiments_group]
-
-    console.print(f"\n[bold green]STARTING RUN FOR {len(experiments_group)} EXPERIMENT(S) ON SHARED STREAM:[/bold green]")
-    for name in exp_names:
-        console.print(f"  [cyan]•[/cyan] {name}")
-
-    results_by_exp = {name: [] for name in exp_names}
-
-    for i, seed in enumerate(cfg.seeds, 1):
-        console.print(f"[bold blue][{i}/{len(cfg.seeds)}] Seed: {seed} | Running parallel stream...[/bold blue]")
+    for seed in cfg.seeds:
         set_seed(seed)
-
-        cfg.full_batch_size = max(e.get("batch_size", cfg.full_batch_size) for e in experiments_group)
-
         train_loader = dataset.get_train_dataloader(cfg, seed=seed)
-
-        seed_scores = trainer.train_seed(experiments_group, train_loader, cfg, seed=seed)
-
-        if isinstance(seed_scores, dict):
-            for name, score in seed_scores.items():
-                results_by_exp[name].append(score)
-        else:
-            results_by_exp[exp_names[0]].append(seed_scores)
-
+        score = trainer.train_seed(exp_dict, train_loader, cfg, exp_name=exp_name, seed=seed)
+        results.append(score)
         del train_loader
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
+
+    return exp_name, results
+
+
+def main():
+    mp.set_start_method("spawn", force=True)
+
+    cfg = Config()
+    console = Console()
+
+    active_experiment_fns = [
+        exp_gru_dualstream_micro_delta,
+        exp_gru_input_encoders_micro_delta_skip,
+        exp_gru_input_encoders_micro_delta_two_heads,
+        exp_gru_input_encoders_micro_delta_sigm,
+        exp_gru_input_encoders_micro_delta_resgru,
+        exp_gru_input_encoders_micro_delta,
+        exp_gru_input_encoders_micro_delta_highway,
+        exp_gru_dualstream_l1_delta,
+        exp_gru_input_encoders_l1_delta_6tan,
+        exp_gru_sum_diff,
+        exp_base_gru_asym_tanh,
+        exp_gru_gated_input,
+        exp_gru_gated_output,
+        exp_gru_chrono_init,
+        exp_vgru_chunked,
+    ]
+
+    max_workers = 4
+    console.print(f"\n[bold green]STARTING PARALLEL POOL FOR {len(active_experiment_fns)} EXPERIMENTS ({max_workers} WORKERS):[/bold green]")
+
+    results_by_exp = {}
+    ctx = mp.get_context("spawn")
+
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
+        futures = [executor.submit(run_single_experiment_task, exp_fn, cfg) for exp_fn in active_experiment_fns]
+        for f in futures:
+            name, scores = f.result()
+            results_by_exp[name] = scores
+            console.print(f"  [bold green]✓ COMPLETED:[/bold green] [cyan]{name:<35}[/cyan] -> WP: {np.mean(scores):.5f}")
 
     table = Table(title="\nFINAL COMPARISON (MEAN ± STD ACROSS SEEDS)", show_header=True, header_style="bold magenta")
     table.add_column("Experiment Name", style="cyan", width=45)
@@ -70,31 +91,6 @@ def run_experiment(experiments_group, cfg):
         table.add_row(name, f"{mean_wp:.5f} ± {std_wp:.5f}")
 
     console.print(table)
-    return results_by_exp
-
-
-def main():
-    cfg = Config()
-
-    active_experiments = [
-        exp_gru_dualstream_micro_delta(),
-        exp_gru_input_encoders_micro_delta_skip(),
-        exp_gru_input_encoders_micro_delta_two_heads(),
-        exp_gru_input_encoders_micro_delta_sigm(),
-        exp_gru_input_encoders_micro_delta_resgru(),
-        exp_gru_input_encoders_micro_delta(),
-        exp_gru_input_encoders_micro_delta_highway(),
-        exp_gru_dualstream_l1_delta(),
-        exp_gru_input_encoders_l1_delta_6tan(),
-        exp_gru_sum_diff(),
-        exp_base_gru_asym_tanh(),
-        exp_gru_gated_input(),
-        exp_gru_gated_output(),
-        exp_gru_chrono_init(),
-        exp_vgru_chunked(),
-    ]
-
-    run_experiment(active_experiments, cfg)
 
 
 if __name__ == "__main__":

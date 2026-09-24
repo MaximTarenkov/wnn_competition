@@ -1,4 +1,3 @@
-# dataset.py
 import os
 import random
 import numpy as np
@@ -53,7 +52,6 @@ class ParquetChunkDataset(Dataset):
 
 
 def collate_chunk_shuffle(batch):
-    # Склеиваем все чанки из батча и перемешиваем
     features = torch.cat([item[0] for item in batch], dim=0)
     targets = torch.cat([item[1] for item in batch], dim=0)
     perm = torch.randperm(features.size(0))
@@ -79,10 +77,8 @@ def get_train_dataloader(cfg, seed: int | None = None) -> DataLoader:
         ds,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=2,
+        num_workers=0,
         pin_memory=True,
-        prefetch_factor=2,
-        worker_init_fn=seed_worker,
         generator=g,
         collate_fn=collate_chunk_shuffle,
     )
