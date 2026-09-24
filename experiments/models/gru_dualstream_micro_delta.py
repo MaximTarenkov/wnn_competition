@@ -48,11 +48,7 @@ class GRUDualStreamMicroDelta(nn.Module):
         )
 
         fused_dim = self.state_hidden_dim + self.delta_hidden_dim
-        self.head = nn.Sequential(
-            nn.Linear(fused_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
+        self.head = nn.Linear(fused_dim, output_dim)
 
     def _compute_micro_features(self, p_b0, v_b0, p_a0, v_a0, p_b1, v_b1, p_a1, v_a1, eps=1e-6):
         def _extract_asset_micro(p_b, v_b, p_a, v_a):

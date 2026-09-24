@@ -42,11 +42,7 @@ class GRUDualStreamL1Delta(nn.Module):
         )
 
         fused_dim = self.state_hidden_dim + self.delta_hidden_dim
-        self.head = nn.Sequential(
-            nn.Linear(fused_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
+        self.head = nn.Linear(fused_dim, output_dim)
 
     def _extract_l1(self, p_b, v_b, p_a, v_a):
         best_bid_p, bid_idx = p_b.max(dim=-1, keepdim=True)
