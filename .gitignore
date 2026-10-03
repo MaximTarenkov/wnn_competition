@@ -22,3 +22,5 @@ output.pdf
 *.html
 .DS_Store
 analysis/
+saved_runs_backup/
+online_runs/

@@ -1,24 +1,20 @@
 from models import (
     base_gru,
-    base_gru_asym_tanh,
-    gru_chrono_init,
+    gru_gated_input_encoders_delta,
     gru_gated_input,
     gru_gated_output,
+    gru_input_encoders_delta_gated_skip,
+    gru_input_encoders_delta_highway,
+    gru_input_encoders_delta_sigm,
+    gru_input_encoders_delta_two_heads,
+    gru_input_encoders_delta,
+    gru_input_encoders_l1_fix_delta,
+    gru_input_encoders_vol_agg_delta,
     gru_input_encoders,
-    gru_input_encoders_micro,
-    gru_input_encoders_l1,
-    gru_input_encoders_l1_delta,
-    gru_input_encoders_l1_delta_6tan,
-    gru_input_encoders_micro_delta,
-    gru_input_encoders_micro_delta_highway,
-    gru_input_encoders_micro_delta_resgru,
-    gru_input_encoders_micro_delta_sigm,
-    gru_input_encoders_micro_delta_skip,
-    gru_input_encoders_micro_delta_two_heads,
-    gru_dualstream_l1_delta,
-    gru_dualstream_micro_delta,
     gru_sum_diff,
     vgru_chunked,
+    base_gru_delta,
+    base_gru_vol_agg_delta,
 )
 
 from methods import (
@@ -47,7 +43,7 @@ def base_gru_5b():
 
 def exp_gru_input_encoders():
     return {
-        "name": "gru_input_encoders_ep4",
+        "name": "gru_input_encoders",
         "model": gru_input_encoders,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
@@ -57,10 +53,10 @@ def exp_gru_input_encoders():
     }
 
 
-def exp_gru_input_encoders_l1():
+def exp_gru_input_encoders_delta():
     return {
-        "name": "gru_input_encoders_l1_ep4",
-        "model": gru_input_encoders_l1,
+        "name": "gru_input_encoders_delta",
+        "model": gru_input_encoders_delta,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -69,10 +65,10 @@ def exp_gru_input_encoders_l1():
     }
 
 
-def exp_gru_input_encoders_micro():
+def exp_gru_input_encoders_l1_fix_delta():
     return {
-        "name": "gru_input_encoders_micro_ep4",
-        "model": gru_input_encoders_micro,
+        "name": "gru_input_encoders_l1_fix_delta",
+        "model": gru_input_encoders_l1_fix_delta,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -81,10 +77,10 @@ def exp_gru_input_encoders_micro():
     }
 
 
-def exp_gru_input_encoders_l1_delta():
+def exp_gru_input_encoders_vol_agg_delta():
     return {
-        "name": "gru_input_encoders_l1_delta_ep4",
-        "model": gru_input_encoders_l1_delta,
+        "name": "gru_input_encoders_vol_agg_delta",
+        "model": gru_input_encoders_vol_agg_delta,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -93,10 +89,10 @@ def exp_gru_input_encoders_l1_delta():
     }
 
 
-def exp_gru_input_encoders_l1_delta_6tan():
+def exp_gru_gated_input_encoders_delta():
     return {
-        "name": "gru_input_encoders_l1_delta_6tan",
-        "model": gru_input_encoders_l1_delta_6tan,
+        "name": "gru_gated_input_encoders_delta",
+        "model": gru_gated_input_encoders_delta,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -105,10 +101,10 @@ def exp_gru_input_encoders_l1_delta_6tan():
     }
 
 
-def exp_gru_input_encoders_micro_delta():
+def exp_gru_input_encoders_delta_gated_skip():
     return {
-        "name": "gru_input_encoders_micro_delta",
-        "model": gru_input_encoders_micro_delta,
+        "name": "gru_input_encoders_delta_gated_skip",
+        "model": gru_input_encoders_delta_gated_skip,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -117,10 +113,10 @@ def exp_gru_input_encoders_micro_delta():
     }
 
 
-def exp_gru_input_encoders_micro_delta_skip():
+def exp_gru_input_encoders_delta_highway():
     return {
-        "name": "gru_input_encoders_micro_delta_skip",
-        "model": gru_input_encoders_micro_delta_skip,
+        "name": "gru_input_encoders_delta_highway",
+        "model": gru_input_encoders_delta_highway,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -129,10 +125,10 @@ def exp_gru_input_encoders_micro_delta_skip():
     }
 
 
-def exp_gru_input_encoders_micro_delta_two_heads():
+def exp_gru_input_encoders_delta_sigm():
     return {
-        "name": "gru_input_encoders_micro_delta_two_heads",
-        "model": gru_input_encoders_micro_delta_two_heads,
+        "name": "gru_input_encoders_delta_sigm",
+        "model": gru_input_encoders_delta_sigm,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -141,82 +137,10 @@ def exp_gru_input_encoders_micro_delta_two_heads():
     }
 
 
-def exp_gru_input_encoders_micro_delta_sigm():
+def exp_gru_input_encoders_delta_two_heads():
     return {
-        "name": "gru_input_encoders_micro_delta_sigm",
-        "model": gru_input_encoders_micro_delta_sigm,
-        "method": cosine_scheduler_method,
-        "lr": 1e-3,
-        "weight_decay": 1e-4,
-        "hidden_dim": 128,
-        "batch_size": 5,
-    }
-
-
-def exp_gru_input_encoders_micro_delta_resgru():
-    return {
-        "name": "gru_input_encoders_micro_delta_resgru",
-        "model": gru_input_encoders_micro_delta_resgru,
-        "method": cosine_scheduler_method,
-        "lr": 1e-3,
-        "weight_decay": 1e-4,
-        "hidden_dim": 128,
-        "batch_size": 5,
-    }
-
-
-def exp_gru_input_encoders_micro_delta_highway():
-    return {
-        "name": "gru_input_encoders_micro_delta_highway",
-        "model": gru_input_encoders_micro_delta_highway,
-        "method": cosine_scheduler_method,
-        "lr": 1e-3,
-        "weight_decay": 1e-4,
-        "hidden_dim": 128,
-        "batch_size": 5,
-    }
-
-
-def exp_gru_dualstream_l1_delta():
-    return {
-        "name": "gru_dualstream_l1_delta",
-        "model": gru_dualstream_l1_delta,
-        "method": cosine_scheduler_method,
-        "lr": 1e-3,
-        "weight_decay": 1e-4,
-        "hidden_dim": 128,
-        "batch_size": 5,
-    }
-
-
-def exp_gru_dualstream_micro_delta():
-    return {
-        "name": "gru_dualstream_micro_delta",
-        "model": gru_dualstream_micro_delta,
-        "method": cosine_scheduler_method,
-        "lr": 1e-3,
-        "weight_decay": 1e-4,
-        "hidden_dim": 128,
-        "batch_size": 5,
-    }
-
-
-def exp_gru_sum_diff():
-    return {
-        "name": "gru_sum_diff",
-        "model": gru_sum_diff,
-        "method": cosine_scheduler_method,
-        "lr": 1e-3,
-        "weight_decay": 1e-4,
-        "hidden_dim": 128,
-        "batch_size": 5,
-    }
-
-
-def exp_base_gru_asym_tanh():
-    return {
-        "name": "base_gru_asym_tanh",
-        "model": base_gru_asym_tanh,
+        "name": "gru_input_encoders_delta_two_heads",
+        "model": gru_input_encoders_delta_two_heads,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -249,10 +173,10 @@ def exp_gru_gated_output():
     }
 
 
-def exp_gru_chrono_init():
+def exp_gru_sum_diff():
     return {
-        "name": "gru_chrono_init",
-        "model": gru_chrono_init,
+        "name": "gru_sum_diff",
+        "model": gru_sum_diff,
         "method": cosine_scheduler_method,
         "lr": 1e-3,
         "weight_decay": 1e-4,
@@ -270,4 +194,38 @@ def exp_vgru_chunked():
         "weight_decay": 1e-4,
         "hidden_dim": 128,
         "batch_size": 5,
+    }
+
+def exp_base_gru_delta():
+    return {
+        "name": "base_gru_delta",
+        "model": base_gru_delta,
+        "method": cosine_scheduler_method,
+        "lr": 1e-3,
+        "weight_decay": 1e-4,
+        "hidden_dim": 128,
+        "batch_size": 5,
+    }
+
+
+def exp_vbase_gru_vol_agg_delta():
+    return {
+        "name": "base_gru_vol_agg_delta",
+        "model": base_gru_vol_agg_delta,
+        "method": cosine_scheduler_method,
+        "lr": 1e-3,
+        "weight_decay": 1e-4,
+        "hidden_dim": 128,
+        "batch_size": 5,
+    }
+
+def base_gru_640b():
+    return {
+        "name": "base_gru_640b",
+        "model": base_gru,
+        "method": cosine_scheduler_method,
+        "lr": 1e-3,
+        "weight_decay": 1e-4,
+        "hidden_dim": 128,
+        "batch_size": 640,
     }
